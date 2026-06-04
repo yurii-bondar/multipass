@@ -1,0 +1,127 @@
+package memory
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/yurii-bondar/multipass/store"
+)
+
+func TestSessionStore_RoundTrip(t *testing.T) {
+	s := NewSessionStore()
+	ctx := context.Background()
+	if err := s.Save(ctx, "sid1", store.SessionData{UserID: "u1"}, time.Minute); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.Get(ctx, "sid1")
+	if err != nil || d.UserID != "u1" {
+		t.Fatalf("Get: %v / %+v", err, d)
+	}
+	_ = s.Delete(ctx, "sid1")
+	if _, err := s.Get(ctx, "sid1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestSessionStore_Expiry(t *testing.T) {
+	s := NewSessionStore()
+	_ = s.Save(context.Background(), "x", store.SessionData{UserID: "u"}, time.Millisecond)
+	time.Sleep(5 * time.Millisecond)
+	if _, err := s.Get(context.Background(), "x"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected expiry to remove key, got %v", err)
+	}
+}
+
+func TestSessionStore_DeleteByUser(t *testing.T) {
+	s := NewSessionStore()
+	_ = s.Save(context.Background(), "a", store.SessionData{UserID: "u1"}, time.Minute)
+	_ = s.Save(context.Background(), "b", store.SessionData{UserID: "u1"}, time.Minute)
+	_ = s.Save(context.Background(), "c", store.SessionData{UserID: "u2"}, time.Minute)
+	_ = s.DeleteByUser(context.Background(), "u1")
+	if _, err := s.Get(context.Background(), "a"); !errors.Is(err, store.ErrNotFound) {
+		t.Errorf("a should be gone")
+	}
+	if _, err := s.Get(context.Background(), "c"); err != nil {
+		t.Errorf("c should remain: %v", err)
+	}
+}
+
+func TestBlacklist(t *testing.T) {
+	b := NewBlacklist()
+	ctx := context.Background()
+	_ = b.Add(ctx, "j1", time.Now().Add(time.Minute))
+	if has, _ := b.Has(ctx, "j1"); !has {
+		t.Fatal("j1 should be blacklisted")
+	}
+	if has, _ := b.Has(ctx, "missing"); has {
+		t.Fatal("missing should not be blacklisted")
+	}
+}
+
+func TestBlacklist_AutoExpiry(t *testing.T) {
+	b := NewBlacklist()
+	_ = b.Add(context.Background(), "j", time.Now().Add(-time.Second))
+	if has, _ := b.Has(context.Background(), "j"); has {
+		t.Fatal("expired entry should not match")
+	}
+}
+
+func TestRefreshStore_RotateHappyPath(t *testing.T) {
+	r := NewRefreshStore()
+	ctx := context.Background()
+	_ = r.Save(ctx, store.RefreshRecord{
+		JTI: "old", UserID: "u", FamilyID: "f", ExpiresAt: time.Now().Add(time.Hour),
+	})
+	_, reused, err := r.RotateAndCheck(ctx, "old", "new", time.Now().Add(time.Hour))
+	if err != nil || reused {
+		t.Fatalf("rotate: err=%v reused=%v", err, reused)
+	}
+}
+
+func TestRefreshStore_ReuseDetected(t *testing.T) {
+	r := NewRefreshStore()
+	ctx := context.Background()
+	_ = r.Save(ctx, store.RefreshRecord{
+		JTI: "old", UserID: "u", FamilyID: "f", ExpiresAt: time.Now().Add(time.Hour),
+	})
+	_, _, _ = r.RotateAndCheck(ctx, "old", "new1", time.Now().Add(time.Hour))
+	_, reused, err := r.RotateAndCheck(ctx, "old", "new2", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatalf("err: %v", err)
+	}
+	if !reused {
+		t.Fatal("expected reuse=true on second rotate of old jti")
+	}
+}
+
+func TestRefreshStore_KillFamily(t *testing.T) {
+	r := NewRefreshStore()
+	ctx := context.Background()
+	_ = r.Save(ctx, store.RefreshRecord{JTI: "a", FamilyID: "f1", ExpiresAt: time.Now().Add(time.Hour)})
+	_ = r.Save(ctx, store.RefreshRecord{JTI: "b", FamilyID: "f1", ExpiresAt: time.Now().Add(time.Hour)})
+	_ = r.Save(ctx, store.RefreshRecord{JTI: "c", FamilyID: "f2", ExpiresAt: time.Now().Add(time.Hour)})
+	_ = r.KillFamily(ctx, "f1")
+	_, reused, err := r.RotateAndCheck(ctx, "a", "x", time.Now().Add(time.Hour))
+	if !errors.Is(err, store.ErrNotFound) || reused {
+		t.Errorf("a should be gone: err=%v reused=%v", err, reused)
+	}
+	_, _, err = r.RotateAndCheck(ctx, "c", "y", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Errorf("c should still rotate: %v", err)
+	}
+}
+
+func TestOTPStore_SingleUse(t *testing.T) {
+	o := NewOTPStore()
+	ctx := context.Background()
+	_ = o.Save(ctx, "code", store.OTPPayload{UserID: "u"}, time.Minute)
+	p, err := o.Consume(ctx, "code")
+	if err != nil || p.UserID != "u" {
+		t.Fatalf("first consume: %v / %+v", err, p)
+	}
+	if _, err := o.Consume(ctx, "code"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("second consume should be ErrNotFound, got %v", err)
+	}
+}

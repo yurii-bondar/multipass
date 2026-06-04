@@ -1,0 +1,32 @@
+# IDE
+.idea/
+.vscode/
+*.iml
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.testljlf
+*.out
+
+# Go test & coverage
+coverage.out
+coverage.html
+*.prof
+*.pprof
+
+# Go workspace
+go.work
+go.work.sum
+
+# macOS
+.DS_Store
+
+# Secrets / local config (never commit)
+*.env
+.env*
+*.pem
+*.key
