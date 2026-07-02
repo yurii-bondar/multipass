@@ -12,6 +12,17 @@
 *.testljlf
 *.out
 
+# `go build ./...` run from the repo root drops one extensionless binary per
+# examples/* command right here — never commit them.
+/jwt
+/session
+/multi
+/paseto
+/magiclink
+/webauthn
+/twofactor
+/apikey
+
 # Go test & coverage
 coverage.out
 coverage.html

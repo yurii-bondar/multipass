@@ -113,6 +113,81 @@ func TestRefreshStore_KillFamily(t *testing.T) {
 	}
 }
 
+func TestCredentialStore_SaveGetListDelete(t *testing.T) {
+	c := NewCredentialStore()
+	ctx := context.Background()
+	id1 := []byte("cred-1")
+	id2 := []byte("cred-2")
+
+	if err := c.Save(ctx, store.WebAuthnCredential{ID: id1, UserID: "u1", Name: "phone"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Save(ctx, store.WebAuthnCredential{ID: id2, UserID: "u1", Name: "key"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := c.Save(ctx, store.WebAuthnCredential{ID: []byte("cred-3"), UserID: "u2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := c.Get(ctx, id1)
+	if err != nil || got.Name != "phone" {
+		t.Fatalf("Get: %v / %+v", err, got)
+	}
+
+	list, err := c.ListByUser(ctx, "u1")
+	if err != nil || len(list) != 2 {
+		t.Fatalf("ListByUser: %v / %+v", err, list)
+	}
+
+	if err := c.Delete(ctx, id1); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := c.Get(ctx, id1); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("expected ErrNotFound after delete, got %v", err)
+	}
+	// Deleting an already-missing id is a no-op, not an error.
+	if err := c.Delete(ctx, id1); err != nil {
+		t.Fatalf("Delete should be idempotent: %v", err)
+	}
+}
+
+func TestCredentialStore_Update(t *testing.T) {
+	c := NewCredentialStore()
+	ctx := context.Background()
+	id := []byte("cred-1")
+
+	if err := c.Update(ctx, store.WebAuthnCredential{ID: id, UserID: "u1"}); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("Update of unknown credential should be ErrNotFound, got %v", err)
+	}
+
+	_ = c.Save(ctx, store.WebAuthnCredential{ID: id, UserID: "u1", Name: "old"})
+	if err := c.Update(ctx, store.WebAuthnCredential{ID: id, UserID: "u1", Name: "new"}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.Get(ctx, id)
+	if err != nil || got.Name != "new" {
+		t.Fatalf("Get after Update: %v / %+v", err, got)
+	}
+}
+
+func TestCredentialStore_DeleteByUser(t *testing.T) {
+	c := NewCredentialStore()
+	ctx := context.Background()
+	_ = c.Save(ctx, store.WebAuthnCredential{ID: []byte("a"), UserID: "u1"})
+	_ = c.Save(ctx, store.WebAuthnCredential{ID: []byte("b"), UserID: "u1"})
+	_ = c.Save(ctx, store.WebAuthnCredential{ID: []byte("c"), UserID: "u2"})
+
+	if err := c.DeleteByUser(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := c.ListByUser(ctx, "u1"); len(list) != 0 {
+		t.Errorf("u1 should have no credentials left: %+v", list)
+	}
+	if list, _ := c.ListByUser(ctx, "u2"); len(list) != 1 {
+		t.Errorf("u2 should be untouched: %+v", list)
+	}
+}
+
 func TestOTPStore_SingleUse(t *testing.T) {
 	o := NewOTPStore()
 	ctx := context.Background()

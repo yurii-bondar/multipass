@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>multipass — Passkey demo</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 640px; margin: 3rem auto; padding: 0 1rem; }
+  input, button { font-size: 1rem; padding: .4rem .6rem; margin: .2rem 0; }
+  button { cursor: pointer; }
+  #log { background: #111; color: #0f0; padding: 1rem; height: 200px; overflow-y: auto; white-space: pre-wrap; }
+  .row { display: flex; gap: .5rem; flex-wrap: wrap; margin: .5rem 0; }
+</style>
+</head>
+<body>
+<h1>multipass — Passkey (WebAuthn) demo</h1>
+<p>
+  Registers a real FIDO2 credential (Touch ID / Windows Hello / a phone via
+  the QR "hybrid" flow / a security key) using your browser's native
+  <code>navigator.credentials</code> API, backed by
+  <code>strategy/webauthn</code> on the server.
+</p>
+
+<label>Email <input id="email" placeholder="alice@example.com" value="alice@example.com"></label>
+
+<div class="row">
+  <button onclick="register()">1. Register a passkey</button>
+  <button onclick="login()">2a. Log in (with email)</button>
+  <button onclick="loginDiscoverable()">2b. Log in (usernameless, pick a passkey)</button>
+  <button onclick="whoami()">3. Whoami (Bearer JWT)</button>
+</div>
+
+<pre id="log"></pre>
+
+<script>
+function log(msg) {
+  const el = document.getElementById('log');
+  el.textContent += msg + '\n';
+  el.scrollTop = el.scrollHeight;
+}
+
+function bufToBase64url(buf) {
+  const bytes = new Uint8Array(buf);
+  let str = '';
+  for (const b of bytes) str += String.fromCharCode(b);
+  return btoa(str).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
+function base64urlToBuf(b64url) {
+  let b64 = b64url.replace(/-/g, '+').replace(/_/g, '/');
+  while (b64.length % 4) b64 += '=';
+  const str = atob(b64);
+  const bytes = new Uint8Array(str.length);
+  for (let i = 0; i < str.length; i++) bytes[i] = str.charCodeAt(i);
+  return bytes.buffer;
+}
+
+// The server sends protocol.CredentialCreation / protocol.CredentialAssertion
+// JSON, which already has the {publicKey: {...}} shape navigator.credentials
+// expects — we only need to base64url-decode the binary fields in place.
+function decodeCreationOptions(publicKey) {
+  publicKey.challenge = base64urlToBuf(publicKey.challenge);
+  publicKey.user.id = base64urlToBuf(publicKey.user.id);
+  if (publicKey.excludeCredentials) {
+    publicKey.excludeCredentials = publicKey.excludeCredentials.map(c => ({ ...c, id: base64urlToBuf(c.id) }));
+  }
+  return publicKey;
+}
+
+function decodeRequestOptions(publicKey) {
+  publicKey.challenge = base64urlToBuf(publicKey.challenge);
+  if (publicKey.allowCredentials) {
+    publicKey.allowCredentials = publicKey.allowCredentials.map(c => ({ ...c, id: base64urlToBuf(c.id) }));
+  }
+  return publicKey;
+}
+
+// Mirrors the shape strategy/webauthn (via go-webauthn) expects to parse
+// back: {id, rawId, type, response: {...}, clientExtensionResults}.
+function attestationToJSON(cred) {
+  return {
+    id: cred.id,
+    rawId: bufToBase64url(cred.rawId),
+    type: cred.type,
+    response: {
+      attestationObject: bufToBase64url(cred.response.attestationObject),
+      clientDataJSON: bufToBase64url(cred.response.clientDataJSON),
+      transports: cred.response.getTransports ? cred.response.getTransports() : [],
+    },
+    clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+  };
+}
+
+function assertionToJSON(cred) {
+  const out = {
+    id: cred.id,
+    rawId: bufToBase64url(cred.rawId),
+    type: cred.type,
+    response: {
+      authenticatorData: bufToBase64url(cred.response.authenticatorData),
+      clientDataJSON: bufToBase64url(cred.response.clientDataJSON),
+      signature: bufToBase64url(cred.response.signature),
+    },
+    clientExtensionResults: cred.getClientExtensionResults ? cred.getClientExtensionResults() : {},
+  };
+  if (cred.response.userHandle) {
+    out.response.userHandle = bufToBase64url(cred.response.userHandle);
+  }
+  return out;
+}
+
+let accessToken = '';
+
+async function register() {
+  const email = document.getElementById('email').value;
+  try {
+    const start = await (await fetch('/register/start', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email }),
+    })).json();
+
+    const publicKey = decodeCreationOptions(start.options.publicKey);
+    const cred = await navigator.credentials.create({ publicKey });
+
+    const resp = await fetch('/register/finish?session=' + encodeURIComponent(start.session_id), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(attestationToJSON(cred)),
+    });
+    log(resp.ok ? '✓ passkey registered for ' + email : '✗ register failed: ' + await resp.text());
+  } catch (e) { log('✗ ' + e); }
+}
+
+async function login() {
+  const email = document.getElementById('email').value;
+  await doLogin('/login/start?email=' + encodeURIComponent(email));
+}
+
+async function loginDiscoverable() {
+  await doLogin('/login/start');
+}
+
+async function doLogin(startURL) {
+  try {
+    const start = await (await fetch(startURL)).json();
+    const publicKey = decodeRequestOptions(start.options.publicKey);
+    const cred = await navigator.credentials.get({ publicKey });
+
+    const resp = await fetch('/login/finish?session=' + encodeURIComponent(start.session_id), {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(assertionToJSON(cred)),
+    });
+    if (!resp.ok) { log('✗ login failed: ' + await resp.text()); return; }
+    const creds = await resp.json();
+    accessToken = creds.Access;
+    log('✓ logged in — access token stored (' + accessToken.slice(0, 16) + '…)');
+  } catch (e) { log('✗ ' + e); }
+}
+
+async function whoami() {
+  if (!accessToken) { log('✗ log in first'); return; }
+  const resp = await fetch('/me', { headers: { Authorization: 'Bearer ' + accessToken } });
+  log(await resp.text());
+}
+</script>
+</body>
+</html>

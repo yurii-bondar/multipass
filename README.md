@@ -2,8 +2,11 @@
 
 A pluggable, framework-agnostic authentication library for Go, conceptually
 inspired by Passport.js. Every authentication method (JWT, PASETO, opaque
-sessions, API keys, magic links / OTP, TOTP) is a `Strategy` that satisfies
-a single small interface and is registered on a `Service`.
+sessions, API keys, magic links / OTP, TOTP, Passkeys/WebAuthn) is a
+`Strategy` that satisfies a single small interface and is registered on a
+`Service`. Any issuing strategy can additionally be wrapped with
+`multipass.RequireTwoFactor` to demand a second factor before it mints a
+credential.
 
 ## Design rules
 
@@ -28,6 +31,41 @@ a single small interface and is registered on a `Service`.
 | `apikey` | server (`KeyStore`) | n/a | yes | programmatic access, M2M |
 | `magiclink` | server (`OTPStore`) | n/a | n/a | passwordless email/SMS login |
 | `totp` | per-user secret | n/a | n/a | second factor on top of any other strategy |
+| `webauthn` | server (`CredentialStore` + `OTPStore` for challenges) | n/a | yes | Passkeys/FIDO2, phishing-resistant login, second factor |
+
+## Two-factor: `multipass.RequireTwoFactor`
+
+Any issuing strategy (`jwt`, `paseto`, `session`, `apikey`, `webauthn`, ...)
+can be wrapped at `Register` time so it demands a second factor before
+minting a credential — one decorator, not a per-strategy `2FA: true` flag,
+since every strategy already exposes the same `Issue`/`Verify`/`Revoke`
+triple:
+
+```go
+totpStore := myTOTPSecretStore()
+totp, _ := magiclink.NewTOTP(totpStore)
+
+svc.Register(multipass.RequireTwoFactor(jwtStrategy, totp,
+    multipass.WithRequirement(multipass.TwoFactorRequirementFunc(
+        func(ctx context.Context, userID string) (bool, error) {
+            u, err := users.GetByID(ctx, userID)
+            if err != nil {
+                return false, err
+            }
+            return u.MFASecret != "", nil // only users enrolled in 2FA are gated
+        },
+    )),
+))
+svc.Register(local.New(users, hasher)) // primary factor, left unwrapped
+```
+
+`svc.Issue(ctx, "jwt", principal)` still works unchanged — the gate keeps the
+wrapped strategy's name. Without a second-factor code in
+`Principal.Extra["2fa_code"]` (key configurable via `WithExtraKey`), `Issue`
+returns `multipass.ErrTwoFactorRequired`; the caller prompts for the code
+and retries. `webauthn.Strategy` implements the same `Verify` method TOTP
+does, so a passkey can be used as the second factor too — either type can be
+passed as-is to `RequireTwoFactor`.
 
 ## Installation
 
@@ -133,16 +171,42 @@ useful for tests and examples — never for production.
 
 ## Examples
 
-- [`examples/jwt`](examples/jwt) — net/http with JWT.
-- [`examples/session`](examples/session) — cookie-based sessions.
-- [`examples/multi`](examples/multi) — JWT for `/api`, sessions for `/web`,
-  API keys for `/m2m`, all served by the same `Service`.
+Every strategy in the matrix above has a runnable, self-contained example
+(each is `package main`, in-memory storage, state lost on restart — wire
+real adapters in production):
+
+- [`examples/jwt`](examples/jwt) — `local` + `jwt`: signup/login/refresh/logout
+  over Bearer tokens.
+- [`examples/session`](examples/session) — `local` + `session`: cookie-based,
+  opaque server-side sessions.
+- [`examples/paseto`](examples/paseto) — `local` + `paseto` (v4.public): same
+  shape as the JWT example, no `alg` field, no algorithm-confusion surface.
+- [`examples/magiclink`](examples/magiclink) — fully passwordless login: a
+  one-time link "sent" (printed to stdout) creates the account on first sight
+  and a `jwt` is issued once the link is followed.
+- [`examples/apikey`](examples/multi) — covered inside `examples/multi`'s
+  `/m2m` routes: an authenticated user mints a hashed API key for
+  machine-to-machine calls.
+- [`examples/multi`](examples/multi) — one `Service`, three transports: JWT
+  for `/api`, sessions for `/web`, API keys for `/m2m`.
+- [`examples/webauthn`](examples/webauthn) — **Passkeys/FIDO2**: a real
+  browser demo (open `http://localhost:8080`) that registers and logs in
+  with `navigator.credentials` — Touch ID/Windows Hello, a phone via the QR
+  "hybrid" flow, or a USB security key — then issues a `jwt`.
+- [`examples/twofactor`](examples/twofactor) — **2FA**: `multipass.RequireTwoFactor`
+  gating `jwt` behind a standard RFC 6238 TOTP code, compatible with Aegis,
+  Google/Microsoft Authenticator, 1Password, etc.
 
 Run any of them:
 
 ```bash
 go run ./examples/jwt
 ```
+
+`examples/webauthn` is the one you open in an actual browser rather than
+curl — WebAuthn ceremonies only exist there. Every other example is
+curl/HTTPie-friendly; see the comment block at the top of each `main.go` for
+example requests.
 
 ## Security guarantees
 
@@ -163,6 +227,12 @@ go run ./examples/jwt
 - `MultiKeyProvider` is safe for concurrent use; key rotation via
   `SetCurrent` / `AddKey` / `RemoveKey` can be called from any goroutine
   while active request goroutines are verifying tokens.
+- `webauthn` is phishing-resistant by construction: the browser binds every
+  signature to the origin that created the credential, so a byte-perfect
+  lookalike domain still cannot obtain a valid assertion. Challenges are
+  single-use (atomic delete-on-read via `OTPStore`) and TTL-bound.
+- `multipass.RequireTwoFactor` lets any issuing strategy be gated behind a
+  second factor without touching that strategy's own code.
 
 ### Account lockout under concurrent failures
 
@@ -190,11 +260,12 @@ RETURNING failed_logins;
 .
 ├── auth.go             Service, Strategy registry
 ├── principal.go        Principal, Credentials
+├── two_factor.go       TwoFactorGate: wrap any strategy to demand a 2nd factor
 ├── errors.go           Sentinel errors
 ├── ports.go            UserRepository, Clock, IDGen
 ├── password/           Argon2id + bcrypt + pepper
 ├── store/
-│   ├── store.go        SessionStore, Blacklist, RefreshStore, OTPStore
+│   ├── store.go        SessionStore, Blacklist, RefreshStore, OTPStore, CredentialStore
 │   └── memory/         in-memory reference impls
 ├── strategy/
 │   ├── local/          email + password verifier
@@ -202,7 +273,8 @@ RETURNING failed_logins;
 │   ├── paseto/         v4.local + v4.public
 │   ├── session/        opaque SID, idle + absolute TTL
 │   ├── apikey/         hashed API keys, scopes
-│   └── magiclink/      magic links + numeric OTP + TOTP
+│   ├── magiclink/      magic links + numeric OTP + TOTP
+│   └── webauthn/       Passkeys / FIDO2 registration + login
 ├── transport/
 │   ├── extract/        Bearer / Cookie / Query / API-Key extractors
 │   ├── cookie/         secure cookie defaults

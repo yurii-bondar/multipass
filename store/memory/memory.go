@@ -23,8 +23,8 @@ type SessionStore struct {
 }
 
 type sessionEntry struct {
-	data       store.SessionData
-	expiresAt  time.Time
+	data      store.SessionData
+	expiresAt time.Time
 }
 
 func NewSessionStore() *SessionStore {
@@ -121,8 +121,8 @@ func (b *Blacklist) Has(_ context.Context, jti string) (bool, error) {
 // ----- RefreshStore --------------------------------------------------------
 
 type RefreshStore struct {
-	mu      sync.Mutex
-	byJTI   map[string]store.RefreshRecord
+	mu    sync.Mutex
+	byJTI map[string]store.RefreshRecord
 }
 
 func NewRefreshStore() *RefreshStore {
@@ -187,6 +187,75 @@ func (r *RefreshStore) KillUser(_ context.Context, userID string) error {
 	for jti, rec := range r.byJTI {
 		if rec.UserID == userID {
 			delete(r.byJTI, jti)
+		}
+	}
+	return nil
+}
+
+// ----- CredentialStore (WebAuthn / passkeys) --------------------------------
+
+type CredentialStore struct {
+	mu   sync.RWMutex
+	byID map[string]store.WebAuthnCredential // key: string(credentialID)
+}
+
+func NewCredentialStore() *CredentialStore {
+	return &CredentialStore{byID: make(map[string]store.WebAuthnCredential)}
+}
+
+func (c *CredentialStore) Save(_ context.Context, cred store.WebAuthnCredential) error {
+	c.mu.Lock()
+	c.byID[string(cred.ID)] = cred
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *CredentialStore) Get(_ context.Context, credentialID []byte) (*store.WebAuthnCredential, error) {
+	c.mu.RLock()
+	cred, ok := c.byID[string(credentialID)]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, store.ErrNotFound
+	}
+	cp := cred
+	return &cp, nil
+}
+
+func (c *CredentialStore) ListByUser(_ context.Context, userID string) ([]store.WebAuthnCredential, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	var out []store.WebAuthnCredential
+	for _, cred := range c.byID {
+		if cred.UserID == userID {
+			out = append(out, cred)
+		}
+	}
+	return out, nil
+}
+
+func (c *CredentialStore) Update(_ context.Context, cred store.WebAuthnCredential) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.byID[string(cred.ID)]; !ok {
+		return store.ErrNotFound
+	}
+	c.byID[string(cred.ID)] = cred
+	return nil
+}
+
+func (c *CredentialStore) Delete(_ context.Context, credentialID []byte) error {
+	c.mu.Lock()
+	delete(c.byID, string(credentialID))
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *CredentialStore) DeleteByUser(_ context.Context, userID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for id, cred := range c.byID {
+		if cred.UserID == userID {
+			delete(c.byID, id)
 		}
 	}
 	return nil

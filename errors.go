@@ -48,4 +48,10 @@ var (
 	// ErrRateLimited is returned when the optional RateLimiter rejects an
 	// operation (e.g. too many magic-link requests for the same email).
 	ErrRateLimited = errors.New("multipass: rate limited")
+
+	// ErrTwoFactorRequired is returned by TwoFactorGate.Issue when the caller
+	// is enrolled in 2FA but Principal.Extra does not carry a second-factor
+	// code/assertion yet. Applications should catch this and prompt the user
+	// for their second factor instead of treating it as a hard failure.
+	ErrTwoFactorRequired = errors.New("multipass: second factor required")
 )
