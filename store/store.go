@@ -146,3 +146,30 @@ type OTPStore interface {
 	Save(ctx context.Context, code string, payload OTPPayload, ttl time.Duration) error
 	Consume(ctx context.Context, code string) (*OTPPayload, error)
 }
+
+// TOTPGuard enforces the two server-side rules a TOTP verifier needs on top
+// of the RFC 6238 math: a code is accepted at most once (RFC 6238 §5.2), and
+// the number of verification attempts per user is bounded, so a 6-digit code
+// cannot be brute-forced.
+//
+// Implementations MUST make every method atomic with respect to concurrent
+// callers for the same userID. A SQL implementation typically keeps
+// (user_id, last_step, attempts, window_start) in one row and updates it with
+// a single conditional UPDATE.
+type TOTPGuard interface {
+	// Attempt records one verification attempt for userID and returns the
+	// number of attempts made in the current window, including this one. A
+	// window starts with the first attempt and lasts for window; once it has
+	// elapsed the count starts again from 1.
+	Attempt(ctx context.Context, userID string, window time.Duration) (int, error)
+
+	// ResetAttempts clears the attempt counter after a successful
+	// verification.
+	ResetAttempts(ctx context.Context, userID string) error
+
+	// AdvanceStep records step (the RFC 6238 time counter of the matched
+	// code) as used. It returns true only when step is strictly greater than
+	// the last step recorded for userID; otherwise the code is a replay and
+	// it returns false without changing state.
+	AdvanceStep(ctx context.Context, userID string, step int64) (bool, error)
+}

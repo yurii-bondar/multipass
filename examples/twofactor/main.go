@@ -71,7 +71,7 @@ func main() {
 		log.Fatal(err)
 	}
 	localStrat := local.New(users, hasher)
-	totpStrat, err := magiclink.NewTOTP(totpSecrets{users}, magiclink.TOTPWithIssuer("multipass demo"))
+	totpStrat, err := magiclink.NewTOTP(totpSecrets{users}, memory.NewTOTPGuard(), magiclink.TOTPWithIssuer("multipass demo"))
 	if err != nil {
 		log.Fatal(err)
 	}

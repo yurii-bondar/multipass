@@ -43,7 +43,7 @@ func (f TwoFactorRequirementFunc) Required(ctx context.Context, userID string) (
 // instead of duplicating second-factor plumbing seven times. Wrap whichever
 // strategy issues the credential you want gated at Register time:
 //
-//	totp, _ := magiclink.NewTOTP(totpStore)
+//	totp, _ := magiclink.NewTOTP(totpStore, totpGuard)
 //	svc.Register(multipass.RequireTwoFactor(jwtStrategy, totp,
 //	    multipass.WithRequirement(multipass.TwoFactorRequirementFunc(
 //	        func(ctx context.Context, userID string) (bool, error) {

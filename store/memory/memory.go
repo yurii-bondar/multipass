@@ -296,3 +296,64 @@ func (o *OTPStore) Consume(_ context.Context, code string) (*store.OTPPayload, e
 	cp := e.payload
 	return &cp, nil
 }
+
+// ----- TOTPGuard -----------------------------------------------------------
+
+type TOTPGuard struct {
+	mu    sync.Mutex
+	users map[string]*totpState
+}
+
+type totpState struct {
+	lastStep    int64
+	hasStep     bool
+	attempts    int
+	windowStart time.Time
+}
+
+func NewTOTPGuard() *TOTPGuard { return &TOTPGuard{users: make(map[string]*totpState)} }
+
+func (g *TOTPGuard) state(userID string) *totpState {
+	st, ok := g.users[userID]
+	if !ok {
+		st = &totpState{}
+		g.users[userID] = st
+	}
+	return st
+}
+
+func (g *TOTPGuard) Attempt(_ context.Context, userID string, window time.Duration) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st := g.state(userID)
+	now := time.Now()
+	if st.attempts == 0 || now.Sub(st.windowStart) >= window {
+		st.attempts = 0
+		st.windowStart = now
+	}
+	st.attempts++
+	return st.attempts, nil
+}
+
+func (g *TOTPGuard) ResetAttempts(_ context.Context, userID string) error {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st := g.state(userID)
+	st.attempts = 0
+	st.windowStart = time.Time{}
+	return nil
+}
+
+func (g *TOTPGuard) AdvanceStep(_ context.Context, userID string, step int64) (bool, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	st := g.state(userID)
+	if st.hasStep && step <= st.lastStep {
+		return false, nil
+	}
+	st.lastStep = step
+	st.hasStep = true
+	return true, nil
+}
+
+var _ store.TOTPGuard = (*TOTPGuard)(nil)

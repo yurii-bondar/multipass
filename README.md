@@ -42,8 +42,9 @@ since every strategy already exposes the same `Issue`/`Verify`/`Revoke`
 triple:
 
 ```go
-totpStore := myTOTPSecretStore()
-totp, _ := magiclink.NewTOTP(totpStore)
+totpStore := myTOTPSecretStore() // TOTP secrets, keyed by user id
+totpGuard := myTOTPGuard()       // store.TOTPGuard: replay + attempt limit
+totp, _ := magiclink.NewTOTP(totpStore, totpGuard)
 
 svc.Register(multipass.RequireTwoFactor(jwtStrategy, totp,
     multipass.WithRequirement(multipass.TwoFactorRequirementFunc(
@@ -220,6 +221,8 @@ example requests.
 - Account lockout after configurable failed-attempt threshold (see note
   below on concurrent failures).
 - Single-use OTPs (atomic delete-on-read) for magic links / SMS codes.
+- TOTP codes are accepted at most once (RFC 6238 §5.2) and verification
+  attempts are capped per user (default 5 per 15 min) via `store.TOTPGuard`.
 - Cookies built by `transport/cookie` use `HttpOnly`, `Secure`,
   `SameSite=Lax`, and the `__Host-` prefix by default.
 - Every operation is `context`-aware: cancellation, deadlines, and
