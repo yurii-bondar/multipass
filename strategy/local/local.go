@@ -151,6 +151,7 @@ func (s *Strategy) Authenticate(ctx context.Context, identifier, secret string) 
 		UserID:       user.ID,
 		Email:        user.Email,
 		Roles:        user.Roles,
+		PasswordVer:  user.PasswordVer,
 		Extra:        user.Metadata,
 		StrategyName: Name,
 	}, nil

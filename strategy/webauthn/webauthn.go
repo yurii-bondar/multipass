@@ -381,6 +381,7 @@ func (s *Strategy) FinishLogin(ctx context.Context, sessionID string, r *http.Re
 		UserID:       u.ID,
 		Email:        u.Email,
 		Roles:        u.Roles,
+		PasswordVer:  u.PasswordVer,
 		StrategyName: Name,
 		TokenID:      base64.RawURLEncoding.EncodeToString(cred.ID),
 		IssuedAt:     s.clock.Now(),

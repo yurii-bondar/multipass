@@ -282,3 +282,86 @@ func TestVerify_WrongIssuer(t *testing.T) {
 		t.Fatalf("expected wrong issuer to fail, got %v", err)
 	}
 }
+
+// Identity claims used to live only in the access token, so the first
+// Refresh produced an access token without roles or email — an admin
+// silently lost admin after 15 minutes, and pwd_ver-based invalidation had
+// nothing to compare against.
+func TestRefresh_PreservesIdentityClaims(t *testing.T) {
+	s := newStrategy(t)
+	ctx := context.Background()
+	creds, err := s.Issue(ctx, multipass.Principal{UserID: "u1", Email: "a@b", Roles: []string{"admin"}, PasswordVer: 3})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refresh := creds.Refresh
+	for i := 1; i <= 2; i++ {
+		next, err := s.Refresh(ctx, refresh)
+		if err != nil {
+			t.Fatalf("refresh #%d: %v", i, err)
+		}
+		p, err := s.Verify(ctx, next.Access)
+		if err != nil {
+			t.Fatalf("verify after refresh #%d: %v", i, err)
+		}
+		if p.Email != "a@b" || len(p.Roles) != 1 || p.Roles[0] != "admin" || p.PasswordVer != 3 {
+			t.Fatalf("claims lost after refresh #%d: %+v", i, p)
+		}
+		refresh = next.Refresh
+	}
+}
+
+type userLookup map[string]*multipass.User
+
+func (l userLookup) GetByID(_ context.Context, id string) (*multipass.User, error) {
+	if u, ok := l[id]; ok {
+		cp := *u
+		return &cp, nil
+	}
+	return nil, multipass.ErrUserNotFound
+}
+
+func TestRefresh_WithUserLookup(t *testing.T) {
+	tests := []struct {
+		name     string
+		mutate   func(u userLookup)
+		wantErr  error
+		wantRole string
+	}{
+		{"unchanged user", func(userLookup) {}, nil, "member"},
+		{"role change is picked up", func(u userLookup) { u["u1"].Roles = []string{"admin"} }, nil, "admin"},
+		{"disabled user", func(u userLookup) { u["u1"].Disabled = true }, multipass.ErrTokenRevoked, ""},
+		{"password changed", func(u userLookup) { u["u1"].PasswordVer = 2 }, multipass.ErrTokenRevoked, ""},
+		{"user deleted", func(u userLookup) { delete(u, "u1") }, multipass.ErrTokenRevoked, ""},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			users := userLookup{"u1": {ID: "u1", Email: "a@b", Roles: []string{"member"}, PasswordVer: 1}}
+			s := newStrategy(t, jwt.WithUserLookup(users))
+			ctx := context.Background()
+			creds, err := s.Issue(ctx, multipass.Principal{UserID: "u1", Email: "a@b", Roles: []string{"member"}, PasswordVer: 1})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tc.mutate(users)
+
+			next, err := s.Refresh(ctx, creds.Refresh)
+			if tc.wantErr != nil {
+				if !errors.Is(err, tc.wantErr) {
+					t.Fatalf("expected %v, got %v", tc.wantErr, err)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Refresh: %v", err)
+			}
+			p, err := s.Verify(ctx, next.Access)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(p.Roles) != 1 || p.Roles[0] != tc.wantRole {
+				t.Fatalf("roles = %v, want [%s]", p.Roles, tc.wantRole)
+			}
+		})
+	}
+}

@@ -161,6 +161,11 @@ mp.RemoveKey(oldKey.KID)   // drop old key; tokens signed with it stop verifying
 - Refresh tokens are stateful: each refresh rotates the token and atomically
   marks the old one as used. Replaying an already-used refresh kills the
   whole token family — every device of that user is logged out.
+- Refresh tokens carry the identity claims (email, roles, `pwd_ver`), so
+  they survive any number of rotations. `WithUserLookup` makes every refresh
+  re-read the user: a disabled, deleted or password-changed account (bumped
+  `User.PasswordVer`) kills the token family, and role changes take effect
+  at the next refresh instead of the next login.
 - A `Blacklist` lets you revoke individual access tokens before they expire
   naturally; entries are pruned automatically.
 - Key rotation is supported via `KeyProvider` (multiple `KID`s verify, one

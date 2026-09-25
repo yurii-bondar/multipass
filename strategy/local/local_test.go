@@ -203,3 +203,20 @@ func TestAuthenticate_ResetsFailedCounterOnSuccess(t *testing.T) {
 		t.Errorf("FailedLogins not reset: %d", got.FailedLogins)
 	}
 }
+
+// Token strategies embed Principal.PasswordVer; if local dropped it, every
+// token would carry version 0 and a password change could not revoke them.
+func TestAuthenticate_CarriesPasswordVersion(t *testing.T) {
+	repo := newMemUsers()
+	h := fastHasher()
+	s := local.New(repo, h)
+	u := seedUser(t, repo, h, "alice@example.com", "Password123!")
+	repo.byID[u.ID].PasswordVer = 7
+	p, err := s.Authenticate(context.Background(), "alice@example.com", "Password123!")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.PasswordVer != 7 {
+		t.Fatalf("PasswordVer = %d, want 7", p.PasswordVer)
+	}
+}

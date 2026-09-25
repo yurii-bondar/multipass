@@ -68,7 +68,14 @@ type Strategy struct {
 	idgen        multipass.IDGen
 	blacklist    store.Blacklist
 	refreshStore store.RefreshStore
+	users        UserLookup
 	parser       *jwtv5.Parser
+}
+
+// UserLookup is the slice of multipass.UserRepository that Refresh needs to
+// re-check the user; any UserRepository satisfies it.
+type UserLookup interface {
+	GetByID(ctx context.Context, id string) (*multipass.User, error)
 }
 
 // Option configures the strategy.
@@ -85,6 +92,14 @@ func WithBlacklist(b store.Blacklist) Option { return func(s *Strategy) { s.blac
 func WithRefreshStore(r store.RefreshStore) Option {
 	return func(s *Strategy) { s.refreshStore = r }
 }
+
+// WithUserLookup makes Refresh reload the user on every rotation: the
+// refresh is rejected (and its token family killed) when the user no longer
+// exists, is disabled, or has a different PasswordVer than the one embedded
+// at login; roles and email in the new access token come from the fresh
+// record. Without it Refresh carries the claims of the refresh token over,
+// so role changes only take effect at the next login.
+func WithUserLookup(u UserLookup) Option { return func(s *Strategy) { s.users = u } }
 
 // WithAlgorithm overrides the default EdDSA. The same algorithm must be the
 // one keys in the KeyProvider were generated for.
@@ -149,6 +164,7 @@ func (s *Strategy) Issue(ctx context.Context, p multipass.Principal) (multipass.
 		Type:             typAccess,
 		Email:            p.Email,
 		Roles:            p.Roles,
+		PwdVer:           p.PasswordVer,
 	})
 	if err != nil {
 		return multipass.Credentials{}, err
@@ -172,6 +188,9 @@ func (s *Strategy) Issue(ctx context.Context, p multipass.Principal) (multipass.
 			RegisteredClaims: s.registered(p.UserID, refreshJTI, now, refreshExp),
 			Type:             typRefresh,
 			FamilyID:         familyID,
+			Email:            p.Email,
+			Roles:            p.Roles,
+			PwdVer:           p.PasswordVer,
 		})
 		if err != nil {
 			return multipass.Credentials{}, err
@@ -350,6 +369,7 @@ func claimsToPrincipal(c *Claims) *multipass.Principal {
 		UserID:       c.Subject,
 		Email:        c.Email,
 		Roles:        c.Roles,
+		PasswordVer:  c.PwdVer,
 		StrategyName: Name,
 		TokenID:      c.ID,
 	}
@@ -358,12 +378,6 @@ func claimsToPrincipal(c *Claims) *multipass.Principal {
 	}
 	if c.ExpiresAt != nil {
 		p.ExpiresAt = c.ExpiresAt.Time
-	}
-	if c.PwdVer != 0 {
-		if p.Extra == nil {
-			p.Extra = make(map[string]any)
-		}
-		p.Extra["pwd_ver"] = c.PwdVer
 	}
 	return p
 }

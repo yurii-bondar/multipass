@@ -9,6 +9,11 @@ type Principal struct {
 	Email  string
 	Roles  []string
 
+	// PasswordVer mirrors User.PasswordVer at authentication time. Token
+	// strategies embed it so that bumping the version (password change or
+	// reset) invalidates every token issued before.
+	PasswordVer int
+
 	// Extra carries strategy-specific metadata that does not fit the common
 	// fields (e.g. API-key scopes, OAuth provider name, MFA status).
 	Extra map[string]any
