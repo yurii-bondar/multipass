@@ -196,6 +196,22 @@ func (s *Service) Verify(ctx context.Context, strategy, raw string) (*Principal,
 	return st.Verify(ctx, raw)
 }
 
+// CompleteTwoFactor finishes a login suspended by a second-factor challenge
+// (see TwoFactorGate). token comes from the *TwoFactorPendingError returned
+// by Issue / Login; input is the second factor (TOTP code, WebAuthn
+// envelope, ...). The strategy must implement TwoFactorCompleter.
+func (s *Service) CompleteTwoFactor(ctx context.Context, strategy, token, input string) (Credentials, error) {
+	st, err := s.Strategy(strategy)
+	if err != nil {
+		return Credentials{}, err
+	}
+	c, ok := st.(TwoFactorCompleter)
+	if !ok {
+		return Credentials{}, fmt.Errorf("%w: %s.CompleteTwoFactor", ErrUnsupportedOperation, strategy)
+	}
+	return c.CompleteTwoFactor(ctx, token, input)
+}
+
 // Refresh renews credentials. The strategy must implement Refreshable.
 func (s *Service) Refresh(ctx context.Context, strategy, refresh string) (Credentials, error) {
 	st, err := s.Strategy(strategy)

@@ -159,6 +159,21 @@ func (s *Strategy) Verify(ctx context.Context, raw string) (*multipass.Principal
 	return s.FinishLogin(ctx, env.SessionID, req)
 }
 
+// VerifySecondFactor implements multipass.SecondFactor: input is the same
+// {session_id, credential} envelope Verify accepts. The assertion must
+// belong to userID — the account already authenticated by the primary
+// factor — so start the ceremony with BeginLogin(userID).
+func (s *Strategy) VerifySecondFactor(ctx context.Context, userID, input string) error {
+	p, err := s.Verify(ctx, input)
+	if err != nil {
+		return err
+	}
+	if p.UserID != userID {
+		return multipass.ErrInvalidCredentials
+	}
+	return nil
+}
+
 // Revoke removes a single passkey. raw is the credential ID, base64url
 // (RawURLEncoding) encoded — the same encoding used for Principal.TokenID
 // after a successful login. Idempotent: revoking an unknown id is not an
@@ -475,5 +490,6 @@ func (u *webauthnUser) WebAuthnCredentials() []gowebauthn.Credential { return u.
 var (
 	_ multipass.Strategy      = (*Strategy)(nil)
 	_ multipass.RevokeAllable = (*Strategy)(nil)
+	_ multipass.SecondFactor  = (*Strategy)(nil)
 	_ gowebauthn.User         = (*webauthnUser)(nil)
 )

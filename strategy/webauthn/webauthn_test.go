@@ -311,3 +311,45 @@ func TestWebAuthn_Revoke_And_RevokeAllForUser(t *testing.T) {
 		t.Fatalf("ListCredentials after RevokeAllForUser = %+v, %v", list, err)
 	}
 }
+
+// loginEnvelope runs BeginLogin for u and returns the {session_id,
+// credential} envelope a browser would post back.
+func loginEnvelope(t *testing.T, s *webauthn.Strategy, u *multipass.User, rp virtualwebauthn.RelyingParty, auth virtualwebauthn.Authenticator, cred virtualwebauthn.Credential) string {
+	t.Helper()
+	assertion, sessionID, err := s.BeginLogin(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	optJSON, _ := json.Marshal(assertion)
+	assertOpts, err := virtualwebauthn.ParseAssertionOptions(string(optJSON))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v", err)
+	}
+	envelope, err := json.Marshal(map[string]any{
+		"session_id": sessionID,
+		"credential": json.RawMessage(virtualwebauthn.CreateAssertionResponse(rp, auth, cred, *assertOpts)),
+	})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	return string(envelope)
+}
+
+// As a second factor the assertion must belong to the account that already
+// passed the primary factor; a valid passkey of another user is not enough.
+func TestWebAuthn_VerifySecondFactor(t *testing.T) {
+	ctx := context.Background()
+	u := &multipass.User{ID: "user-2fa", Email: "dave@example.com"}
+	s, _ := newStrategy(t, newUserStore(u))
+	rp := virtualwebauthn.RelyingParty{Name: rpDisplay, ID: rpID, Origin: rpOrigin}
+	auth := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	registerCredential(t, s, u, rp, &auth, cred)
+
+	if err := s.VerifySecondFactor(ctx, u.ID, loginEnvelope(t, s, u, rp, auth, cred)); err != nil {
+		t.Fatalf("own passkey: %v", err)
+	}
+	if err := s.VerifySecondFactor(ctx, "someone-else", loginEnvelope(t, s, u, rp, auth, cred)); !errors.Is(err, multipass.ErrInvalidCredentials) {
+		t.Fatalf("passkey of another user: expected ErrInvalidCredentials, got %v", err)
+	}
+}

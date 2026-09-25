@@ -192,3 +192,17 @@ func TestNewTOTP_RequiresDependencies(t *testing.T) {
 		})
 	}
 }
+
+func TestTOTP_VerifySecondFactor(t *testing.T) {
+	s, secret, clock := newEnrolledTOTP(t)
+	ctx := context.Background()
+	code, _ := magiclink.GenerateCode(secret, clock.t)
+	if err := s.VerifySecondFactor(ctx, "u1", code); err != nil {
+		t.Fatalf("valid code: %v", err)
+	}
+	for _, tc := range []struct{ user, code string }{{"", code}, {"u1", ""}, {"ghost", code}} {
+		if err := s.VerifySecondFactor(ctx, tc.user, tc.code); !errors.Is(err, multipass.ErrTokenInvalid) {
+			t.Errorf("user %q code %q: expected ErrTokenInvalid, got %v", tc.user, tc.code, err)
+		}
+	}
+}

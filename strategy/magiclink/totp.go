@@ -148,6 +148,16 @@ func (t *TOTPStrategy) Verify(ctx context.Context, raw string) (*multipass.Princ
 	}, nil
 }
 
+// VerifySecondFactor implements multipass.SecondFactor: code is the digits
+// the user typed, userID the account already authenticated by the primary
+// factor.
+func (t *TOTPStrategy) VerifySecondFactor(ctx context.Context, userID, code string) error {
+	if userID == "" || code == "" {
+		return multipass.ErrTokenInvalid
+	}
+	return t.verify(ctx, userID, code)
+}
+
 // verify checks code for userID in this order: attempt budget, code
 // validity, replay. The attempt is counted before anything else so that a
 // brute-force run is throttled regardless of which check it would fail.
@@ -236,4 +246,7 @@ func splitTOTP(raw string) (user, code string, ok bool) {
 	return "", "", false
 }
 
-var _ multipass.Strategy = (*TOTPStrategy)(nil)
+var (
+	_ multipass.Strategy     = (*TOTPStrategy)(nil)
+	_ multipass.SecondFactor = (*TOTPStrategy)(nil)
+)

@@ -49,9 +49,9 @@ var (
 	// operation (e.g. too many magic-link requests for the same email).
 	ErrRateLimited = errors.New("multipass: rate limited")
 
-	// ErrTwoFactorRequired is returned by TwoFactorGate.Issue when the caller
-	// is enrolled in 2FA but Principal.Extra does not carry a second-factor
-	// code/assertion yet. Applications should catch this and prompt the user
-	// for their second factor instead of treating it as a hard failure.
+	// ErrTwoFactorRequired is matched (via errors.Is) by the
+	// *TwoFactorPendingError that TwoFactorGate.Issue returns when the user
+	// must present a second factor. Use errors.As to get the pending token,
+	// prompt the user, then call Service.CompleteTwoFactor.
 	ErrTwoFactorRequired = errors.New("multipass: second factor required")
 )

@@ -8,13 +8,19 @@
 // jwt strategy so Issue additionally demands a TOTP code from users who have
 // one enrolled — see two_factor.go in the repo root.
 //
+// Login is two steps. The password step returns a short-lived, single-use
+// pending token instead of a JWT; only that token plus a valid TOTP code
+// completes the login, so the code step cannot be reached without the
+// password.
+//
 // Endpoints:
 //
 //	POST /signup      {email, password}                    -> 201
-//	POST /2fa/enroll   {email, password}                    -> {otpauth_url, secret}
-//	POST /login        {email, password, code?}             -> {access, refresh}
-//	                    (code omitted + 2FA enrolled -> {"two_factor_required": true})
-//	GET  /me           Authorization: Bearer ...             -> {user_id, email, roles}
+//	POST /2fa/enroll  {email, password}                    -> {otpauth_url, secret}
+//	POST /login       {email, password}                    -> {access, refresh}
+//	                   (2FA enrolled -> {"two_factor_required": true, "pending_token": "..."})
+//	POST /login/2fa   {pending_token, code}                -> {access, refresh}
+//	GET  /me          Authorization: Bearer ...            -> {user_id, email, roles}
 //
 // Run:
 //
@@ -26,8 +32,8 @@
 //	curl -X POST localhost:8080/2fa/enroll -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
 //	# paste "otpauth_url" into Aegis (Import via URI) or "secret" manually, then:
 //	curl -X POST localhost:8080/login -d '{"email":"alice@example.com","password":"correct horse battery staple"}'
-//	# -> {"two_factor_required": true}
-//	curl -X POST localhost:8080/login -d '{"email":"alice@example.com","password":"correct horse battery staple","code":"123456"}'
+//	# -> {"two_factor_required": true, "pending_token": "..."}
+//	curl -X POST localhost:8080/login/2fa -d '{"pending_token":"...","code":"123456"}'
 //	# -> {"Access": "...", ...}
 package main
 
@@ -85,7 +91,10 @@ func main() {
 		}
 		return u.MFASecret != "", nil
 	})
-	gatedJWT := multipass.RequireTwoFactor(jwtStrat, totpStrat, multipass.WithRequirement(requirement))
+	gatedJWT, err := multipass.RequireTwoFactor(jwtStrat, totpStrat, memory.NewOTPStore(), multipass.WithRequirement(requirement))
+	if err != nil {
+		log.Fatal(err)
+	}
 
 	svc := multipass.New(users)
 	svc.Register(gatedJWT) // registers under jwtStrat.Name() — "jwt" — the gate is transparent
@@ -97,6 +106,7 @@ func main() {
 	mux.HandleFunc("/signup", signupHandler(users, hasher))
 	mux.HandleFunc("/2fa/enroll", enrollHandler(svc, users, totpStrat))
 	mux.HandleFunc("/login", loginHandler(svc))
+	mux.HandleFunc("/login/2fa", loginTwoFactorHandler(svc))
 	mux.Handle("/me", mw.Handler(http.HandlerFunc(meHandler)))
 
 	log.Println("listening on :8080")
@@ -157,34 +167,45 @@ func enrollHandler(svc *multipass.Service, users *memUsers, totpStrat *magiclink
 	}
 }
 
-// loginHandler authenticates the password first, then — only for users with
-// 2FA enrolled — demands a TOTP code before Issue mints a JWT. The
-// TOTPStrategy.Verify wire format is "<userID>:<code>", built here from the
-// already-authenticated principal so the client only ever has to send the
-// 6-digit code.
+// loginHandler authenticates the password and asks the gated jwt strategy
+// for a token. Users without 2FA get their JWT straight away; enrolled users
+// get a pending token to redeem at /login/2fa together with their code.
 func loginHandler(svc *multipass.Service) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		var body struct{ Email, Password, Code string }
+		var body struct{ Email, Password string }
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 			http.Error(w, err.Error(), 400)
 			return
 		}
-		principal, err := svc.Authenticate(r.Context(), local.Name, body.Email, body.Password)
-		if err != nil {
+		creds, err := svc.Login(r.Context(), local.Name, jwt.Name, body.Email, body.Password)
+		var pending *multipass.TwoFactorPendingError
+		switch {
+		case errors.As(err, &pending):
+			writeJSON(w, map[string]any{"two_factor_required": true, "pending_token": pending.Token})
+		case err != nil:
 			http.Error(w, "invalid credentials", 401)
+		default:
+			writeJSON(w, creds)
+		}
+	}
+}
+
+// loginTwoFactorHandler redeems a pending token with a TOTP code. The user
+// the code is checked against comes from the server-side pending login, never
+// from the request.
+func loginTwoFactorHandler(svc *multipass.Service) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			PendingToken string `json:"pending_token"`
+			Code         string `json:"code"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			http.Error(w, err.Error(), 400)
 			return
 		}
-		if body.Code != "" {
-			principal.Extra = map[string]any{"2fa_code": principal.UserID + ":" + body.Code}
-		}
-
-		creds, err := svc.Issue(r.Context(), jwt.Name, *principal)
+		creds, err := svc.CompleteTwoFactor(r.Context(), jwt.Name, body.PendingToken, body.Code)
 		if err != nil {
-			if errors.Is(err, multipass.ErrTwoFactorRequired) {
-				writeJSON(w, map[string]bool{"two_factor_required": true})
-				return
-			}
-			http.Error(w, "invalid credentials", 401)
+			http.Error(w, "invalid code", 401)
 			return
 		}
 		writeJSON(w, creds)

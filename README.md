@@ -46,7 +46,7 @@ totpStore := myTOTPSecretStore() // TOTP secrets, keyed by user id
 totpGuard := myTOTPGuard()       // store.TOTPGuard: replay + attempt limit
 totp, _ := magiclink.NewTOTP(totpStore, totpGuard)
 
-svc.Register(multipass.RequireTwoFactor(jwtStrategy, totp,
+gate, err := multipass.RequireTwoFactor(jwtStrategy, totp, pendingStore, // store.OTPStore
     multipass.WithRequirement(multipass.TwoFactorRequirementFunc(
         func(ctx context.Context, userID string) (bool, error) {
             u, err := users.GetByID(ctx, userID)
@@ -56,17 +56,31 @@ svc.Register(multipass.RequireTwoFactor(jwtStrategy, totp,
             return u.MFASecret != "", nil // only users enrolled in 2FA are gated
         },
     )),
-))
+)
+svc.Register(gate)
 svc.Register(local.New(users, hasher)) // primary factor, left unwrapped
 ```
 
-`svc.Issue(ctx, "jwt", principal)` still works unchanged — the gate keeps the
-wrapped strategy's name. Without a second-factor code in
-`Principal.Extra["2fa_code"]` (key configurable via `WithExtraKey`), `Issue`
-returns `multipass.ErrTwoFactorRequired`; the caller prompts for the code
-and retries. `webauthn.Strategy` implements the same `Verify` method TOTP
-does, so a passkey can be used as the second factor too — either type can be
-passed as-is to `RequireTwoFactor`.
+The gate keeps the wrapped strategy's name, so `svc.Login(ctx, "local",
+"jwt", email, password)` still works. For an enrolled user it mints nothing:
+it stores the authenticated principal as a pending login and returns a
+`*multipass.TwoFactorPendingError` (matches `ErrTwoFactorRequired`) carrying
+a single-use, short-lived token. Hand the token to the client, then:
+
+```go
+var pending *multipass.TwoFactorPendingError
+if errors.As(err, &pending) {
+    // ... prompt for the code, then in the next request:
+    creds, err := svc.CompleteTwoFactor(ctx, "jwt", pending.Token, code)
+}
+```
+
+The second factor is always checked against the user stored in the pending
+login — never one supplied by the client — so the code step cannot be
+reached without passing the password step first. Wrong codes are allowed
+`WithMaxAttempts` times (default 3) before the pending login is discarded.
+`webauthn.Strategy` implements `multipass.SecondFactor` as well, so a passkey
+can be the second factor instead of TOTP.
 
 ## Installation
 
@@ -237,7 +251,9 @@ example requests.
   lookalike domain still cannot obtain a valid assertion. Challenges are
   single-use (atomic delete-on-read via `OTPStore`) and TTL-bound.
 - `multipass.RequireTwoFactor` lets any issuing strategy be gated behind a
-  second factor without touching that strategy's own code.
+  second factor without touching that strategy's own code. The second step
+  is bound to a server-side pending login, so it cannot be reached without
+  the primary factor.
 
 ### Account lockout under concurrent failures
 
