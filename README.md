@@ -238,7 +238,10 @@ example requests.
 - Anti-enumeration on `local`: identical timing for `user not found` and
   `wrong password`; same `ErrInvalidCredentials` returned in both cases.
 - Account lockout after configurable failed-attempt threshold (see note
-  below on concurrent failures).
+  below on concurrent failures). A locked account returns the same
+  `ErrInvalidCredentials` as a wrong password, so lockout cannot be used to
+  enumerate accounts. Lockout is per account: also throttle attempts per
+  client (IP) in your app, otherwise anyone can lock a known email out.
 - Single-use OTPs (atomic delete-on-read) for magic links / SMS codes.
   Numeric codes are bound to their recipient (verified as
   `"<recipient>:<code>"`) and verification is rate-limited per recipient.

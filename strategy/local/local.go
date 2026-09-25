@@ -12,7 +12,14 @@
 //     password.FakeVerify.
 //   - Account lockout after a configurable number of consecutive failed
 //     attempts; the user repository is the source of truth for the counter
-//     so it survives process restarts.
+//     so it survives process restarts. A locked account answers with the
+//     same ErrInvalidCredentials as a wrong password, so the lock does not
+//     reveal that the account exists.
+//
+// Lockout is keyed by account, so anyone who knows an email can lock its
+// owner out for the lockout window. Throttle login attempts per client
+// (IP, device) in the application in front of Authenticate; the library
+// has no view of the client.
 //   - Optional opportunistic re-hash on successful login when the stored
 //     hash is bcrypt or uses weaker argon2id parameters than the active
 //     hasher.
@@ -131,7 +138,7 @@ func (s *Strategy) Authenticate(ctx context.Context, identifier, secret string) 
 	}
 	if !user.LockedUntil.IsZero() && s.clock.Now().Before(user.LockedUntil) {
 		s.hasher.FakeVerify(secret)
-		return nil, multipass.ErrAccountLocked
+		return nil, multipass.ErrInvalidCredentials
 	}
 
 	needsRehash, vErr := s.hasher.Verify(user.PasswordHash, secret)

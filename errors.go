@@ -37,9 +37,6 @@ var (
 	// presented for a second time. The whole token family is killed.
 	ErrReuseDetected = errors.New("multipass: refresh token reuse detected")
 
-	// ErrAccountLocked is returned after too many failed login attempts.
-	ErrAccountLocked = errors.New("multipass: account locked")
-
 	// ErrUserNotFound is an internal sentinel; UserRepository implementations
 	// must return this when a user does not exist. The strategy layer
 	// translates it to ErrInvalidCredentials.

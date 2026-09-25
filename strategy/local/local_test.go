@@ -152,10 +152,12 @@ func TestAuthenticate_LockoutAfterThreshold(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		_, _ = s.Authenticate(context.Background(), "carl@example.com", "bad")
 	}
-	// Even with the right password, the account is now locked.
+	// Even with the right password, the account is now locked — and says
+	// so only as "invalid credentials": a distinct error would let anyone
+	// confirm an email is registered by locking it on purpose.
 	_, err := s.Authenticate(context.Background(), "carl@example.com", "ok")
-	if !errors.Is(err, multipass.ErrAccountLocked) {
-		t.Fatalf("expected ErrAccountLocked, got %v", err)
+	if !errors.Is(err, multipass.ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
 	}
 }
 
