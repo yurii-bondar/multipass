@@ -221,6 +221,8 @@ example requests.
 - Account lockout after configurable failed-attempt threshold (see note
   below on concurrent failures).
 - Single-use OTPs (atomic delete-on-read) for magic links / SMS codes.
+  Numeric codes are bound to their recipient (verified as
+  `"<recipient>:<code>"`) and verification is rate-limited per recipient.
 - TOTP codes are accepted at most once (RFC 6238 §5.2) and verification
   attempts are capped per user (default 5 per 15 min) via `store.TOTPGuard`.
 - Cookies built by `transport/cookie` use `HttpOnly`, `Secure`,

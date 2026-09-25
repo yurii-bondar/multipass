@@ -5,8 +5,10 @@
 //     the application can pass to a token strategy (jwt / session / …) to
 //     mint the actual session credential.
 //   - Numeric OTP: a 6-digit code, suitable for SMS, sharing the same OTP
-//     storage and consumption semantics. Use NumericOTPStrategy (constructed
-//     via NewNumericOTP) to opt in to digit-only codes.
+//     storage and consumption semantics. Construct it via NewNumericOTP.
+//     A short numeric code is only unique per recipient, so it is stored
+//     under (purpose, recipient, code) and verified as "<recipient>:<code>";
+//     verification attempts are rate-limited per recipient.
 //
 // One-time properties are guaranteed by store.OTPStore.Consume which MUST
 // be atomic delete-on-read.
@@ -43,8 +45,10 @@ type SenderFunc func(ctx context.Context, to, payload string) error
 
 func (f SenderFunc) Send(ctx context.Context, to, payload string) error { return f(ctx, to, payload) }
 
-// RateLimiter is an optional pre-flight check for Request. Implementations
-// should return multipass.ErrRateLimited when the caller is out of budget.
+// RateLimiter is a pre-flight budget check keyed by a caller-chosen string.
+// It is optional for Request (key: recipient) and required for numeric OTP
+// verification (key: "verify:" + recipient). Implementations should return
+// multipass.ErrRateLimited when the caller is out of budget.
 type RateLimiter interface {
 	Allow(ctx context.Context, key string) error
 }
@@ -54,6 +58,7 @@ type Strategy struct {
 	store     store.OTPStore
 	sender    Sender
 	limiter   RateLimiter
+	verifyLim RateLimiter // numeric OTP only: caps guesses per recipient
 	clock     multipass.Clock
 	ttl       time.Duration
 	codeBytes int
@@ -108,18 +113,25 @@ func New(st store.OTPStore, sender Sender, opts ...Option) (*Strategy, error) {
 	return s, nil
 }
 
-// NewNumericOTP constructs a strategy that emits N-digit numeric codes
-// (default 6) — convenient for SMS delivery. The same Sender / OTPStore /
-// rate-limiter contract applies.
-func NewNumericOTP(st store.OTPStore, sender Sender, digits int, opts ...Option) (*Strategy, error) {
+// NewNumericOTP constructs a strategy that emits N-digit numeric codes —
+// convenient for SMS delivery. The same Sender / OTPStore contract applies.
+//
+// verifyLimiter is required: a numeric code has only 10^digits values, so
+// without a per-recipient cap on Verify it can be guessed. A budget of a few
+// attempts per code lifetime (e.g. 5 per 10 minutes) is typical.
+func NewNumericOTP(st store.OTPStore, sender Sender, digits int, verifyLimiter RateLimiter, opts ...Option) (*Strategy, error) {
 	if digits < 4 || digits > 10 {
 		return nil, errors.New("magiclink: digits must be in [4..10]")
+	}
+	if verifyLimiter == nil {
+		return nil, errors.New("magiclink: numeric OTP requires a verify RateLimiter")
 	}
 	s, err := New(st, sender, opts...)
 	if err != nil {
 		return nil, err
 	}
 	s.digits = digits
+	s.verifyLim = verifyLimiter
 	return s, nil
 }
 
@@ -165,7 +177,7 @@ func (s *Strategy) Request(ctx context.Context, to string, p multipass.Principal
 	if err != nil {
 		return "", err
 	}
-	if err := s.store.Save(ctx, code, store.OTPPayload{
+	if err := s.store.Save(ctx, s.storeKey(to, code), store.OTPPayload{
 		UserID:  p.UserID,
 		Email:   to,
 		Purpose: s.purpose,
@@ -186,15 +198,16 @@ func (s *Strategy) Request(ctx context.Context, to string, p multipass.Principal
 // Verify consumes a code (single-use, atomic delete-on-read) and returns a
 // Principal. The application should then pass that Principal to a token
 // strategy (jwt / session / …) to mint the actual session credential.
-func (s *Strategy) Verify(ctx context.Context, code string) (*multipass.Principal, error) {
-	code = strings.TrimSpace(code)
-	if s.urlPrefix != "" && strings.HasPrefix(code, s.urlPrefix) {
-		code = strings.TrimPrefix(code, s.urlPrefix)
+//
+// For magic links raw is the code or the full link. For numeric OTP raw is
+// "<recipient>:<code>", where recipient is the same email/phone passed to
+// Request.
+func (s *Strategy) Verify(ctx context.Context, raw string) (*multipass.Principal, error) {
+	key, err := s.verifyKey(ctx, strings.TrimSpace(raw))
+	if err != nil {
+		return nil, err
 	}
-	if code == "" {
-		return nil, multipass.ErrTokenInvalid
-	}
-	payload, err := s.store.Consume(ctx, code)
+	payload, err := s.store.Consume(ctx, key)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			return nil, multipass.ErrTokenInvalid
@@ -210,6 +223,42 @@ func (s *Strategy) Verify(ctx context.Context, code string) (*multipass.Principa
 		Extra:        payload.Extra,
 		StrategyName: Name,
 	}, nil
+}
+
+// verifyKey turns the raw Verify input into the OTPStore key, applying the
+// per-recipient verification budget for numeric codes.
+func (s *Strategy) verifyKey(ctx context.Context, raw string) (string, error) {
+	if s.digits == 0 {
+		code := strings.TrimPrefix(raw, s.urlPrefix)
+		if code == "" {
+			return "", multipass.ErrTokenInvalid
+		}
+		return code, nil
+	}
+	i := strings.LastIndexByte(raw, ':')
+	if i <= 0 || i == len(raw)-1 {
+		return "", multipass.ErrTokenInvalid
+	}
+	to, code := raw[:i], raw[i+1:]
+	if err := s.verifyLim.Allow(ctx, "verify:"+normalizeRecipient(to)); err != nil {
+		return "", err
+	}
+	return s.storeKey(to, code), nil
+}
+
+// storeKey namespaces numeric codes by purpose and recipient: two users can
+// legitimately hold the same 6-digit code at the same time, and a code must
+// only ever redeem for the recipient it was sent to. Magic-link codes are
+// 256-bit random values and are stored as-is.
+func (s *Strategy) storeKey(to, code string) string {
+	if s.digits == 0 {
+		return code
+	}
+	return "otp\x00" + s.purpose + "\x00" + normalizeRecipient(to) + "\x00" + code
+}
+
+func normalizeRecipient(to string) string {
+	return strings.ToLower(strings.TrimSpace(to))
 }
 
 // Revoke is a no-op: codes are single-use; Consume already deletes them.
