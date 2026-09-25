@@ -32,12 +32,12 @@ const Name = "session"
 
 // Strategy implements opaque server-side sessions.
 type Strategy struct {
-	store               store.SessionStore
-	clock               multipass.Clock
-	idgen               multipass.IDGen
-	absoluteTTL         time.Duration
-	idleTTL             time.Duration // 0 disables rolling extension
-	revokeOldOnIssue    bool
+	store            store.SessionStore
+	clock            multipass.Clock
+	idgen            multipass.IDGen
+	absoluteTTL      time.Duration
+	idleTTL          time.Duration // 0 disables rolling extension
+	revokeOldOnIssue bool
 }
 
 // Option configures the session strategy.

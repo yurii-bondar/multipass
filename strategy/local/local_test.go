@@ -15,8 +15,8 @@ import (
 // ----- in-memory user repo -------------------------------------------------
 
 type memUsers struct {
-	mu    sync.Mutex
-	byID  map[string]*multipass.User
+	mu     sync.Mutex
+	byID   map[string]*multipass.User
 	byMail map[string]string
 }
 

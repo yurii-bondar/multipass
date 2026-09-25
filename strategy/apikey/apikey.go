@@ -15,10 +15,10 @@
 // Only the prefix+env (and a key-id, if you want one) are stored in
 // plaintext: the body is hashed. This means:
 //
-//   * Lookup is O(1): split the key, look up by prefix+env+key-id.
-//   * Database leak alone does NOT compromise active keys (the attacker
+//   - Lookup is O(1): split the key, look up by prefix+env+key-id.
+//   - Database leak alone does NOT compromise active keys (the attacker
 //     cannot reverse HMAC-SHA256 without the pepper).
-//   * Comparison is constant-time.
+//   - Comparison is constant-time.
 //
 // The application supplies a KeyStore implementation (database, in-memory,
 // Vault, …). The library never imports a database driver itself.
@@ -45,11 +45,11 @@ const Name = "apikey"
 // Record is one row in the KeyStore. The application persists this struct
 // (or its fields) however it likes.
 type Record struct {
-	ID        string    // application-scoped key id (e.g. uuid)
-	Prefix    string    // "sk_live"
-	UserID    string    // principal subject
-	HashHex   string    // hex(HMAC-SHA256(pepper, body))
-	Scopes    []string  // optional permissions
+	ID        string   // application-scoped key id (e.g. uuid)
+	Prefix    string   // "sk_live"
+	UserID    string   // principal subject
+	HashHex   string   // hex(HMAC-SHA256(pepper, body))
+	Scopes    []string // optional permissions
 	CreatedAt time.Time
 	ExpiresAt time.Time // zero == no expiry
 	Revoked   bool
@@ -77,8 +77,8 @@ type KeyStore interface {
 type Strategy struct {
 	store  KeyStore
 	pepper []byte
-	prefix string  // "sk"
-	env    string  // "live" / "test"; may be empty
+	prefix string // "sk"
+	env    string // "live" / "test"; may be empty
 	clock  multipass.Clock
 }
 

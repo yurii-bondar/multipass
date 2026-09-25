@@ -65,13 +65,13 @@ type Strategy struct {
 // Option configures the strategy.
 type Option func(*Strategy)
 
-func WithIssuer(iss string) Option              { return func(s *Strategy) { s.issuer = iss } }
-func WithAudience(aud string) Option            { return func(s *Strategy) { s.audience = aud } }
-func WithAccessTTL(d time.Duration) Option      { return func(s *Strategy) { s.accessTTL = d } }
-func WithRefreshTTL(d time.Duration) Option     { return func(s *Strategy) { s.refreshTTL = d } }
-func WithClock(c multipass.Clock) Option           { return func(s *Strategy) { s.clock = c } }
-func WithIDGen(g multipass.IDGen) Option           { return func(s *Strategy) { s.idgen = g } }
-func WithBlacklist(b store.Blacklist) Option    { return func(s *Strategy) { s.blacklist = b } }
+func WithIssuer(iss string) Option           { return func(s *Strategy) { s.issuer = iss } }
+func WithAudience(aud string) Option         { return func(s *Strategy) { s.audience = aud } }
+func WithAccessTTL(d time.Duration) Option   { return func(s *Strategy) { s.accessTTL = d } }
+func WithRefreshTTL(d time.Duration) Option  { return func(s *Strategy) { s.refreshTTL = d } }
+func WithClock(c multipass.Clock) Option     { return func(s *Strategy) { s.clock = c } }
+func WithIDGen(g multipass.IDGen) Option     { return func(s *Strategy) { s.idgen = g } }
+func WithBlacklist(b store.Blacklist) Option { return func(s *Strategy) { s.blacklist = b } }
 func WithRefreshStore(r store.RefreshStore) Option {
 	return func(s *Strategy) { s.refreshStore = r }
 }

@@ -10,16 +10,16 @@ import (
 // User is the canonical user record returned by UserRepository. The hash is
 // kept server-side; the password itself never leaves the local strategy.
 type User struct {
-	ID            string
-	Email         string
-	PasswordHash  string
-	Roles         []string
-	Disabled      bool
-	FailedLogins  int
-	LockedUntil   time.Time
-	PasswordVer   int    // bumped on password change; can be embedded in tokens to invalidate all old tokens
-	MFASecret     string // optional: TOTP secret for 2FA
-	Metadata      map[string]any
+	ID           string
+	Email        string
+	PasswordHash string
+	Roles        []string
+	Disabled     bool
+	FailedLogins int
+	LockedUntil  time.Time
+	PasswordVer  int    // bumped on password change; can be embedded in tokens to invalidate all old tokens
+	MFASecret    string // optional: TOTP secret for 2FA
+	Metadata     map[string]any
 }
 
 // UserRepository is the database-agnostic contract a host application must

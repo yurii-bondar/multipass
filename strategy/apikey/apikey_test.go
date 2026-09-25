@@ -15,8 +15,8 @@ import (
 // ----- in-memory KeyStore --------------------------------------------------
 
 type memStore struct {
-	mu    sync.Mutex
-	byID  map[string]*apikey.Record
+	mu   sync.Mutex
+	byID map[string]*apikey.Record
 }
 
 func newMemStore() *memStore { return &memStore{byID: map[string]*apikey.Record{}} }
