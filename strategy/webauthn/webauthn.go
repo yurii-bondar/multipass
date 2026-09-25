@@ -370,13 +370,22 @@ func (s *Strategy) FinishLogin(ctx context.Context, sessionID string, r *http.Re
 		return nil, multipass.ErrTokenInvalid
 	}
 
-	if err := s.bumpCounter(ctx, resolvedID, cred); err != nil {
-		return nil, err
-	}
-
 	u, err := s.users.GetByID(ctx, resolvedID)
 	if err != nil {
 		return nil, fmt.Errorf("webauthn: load user: %w", err)
+	}
+	if u.Disabled {
+		return nil, multipass.ErrInvalidCredentials
+	}
+	// The authenticator reported a signature counter that did not advance
+	// past the stored one: two copies of the private key are in use. The
+	// stored counter is left untouched so every later login from either
+	// copy keeps failing until the user re-registers the passkey.
+	if cred.Authenticator.CloneWarning {
+		return nil, fmt.Errorf("%w: authenticator may be cloned", multipass.ErrTokenInvalid)
+	}
+	if err := s.bumpCounter(ctx, resolvedID, cred); err != nil {
+		return nil, err
 	}
 
 	return &multipass.Principal{

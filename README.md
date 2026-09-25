@@ -254,7 +254,10 @@ example requests.
 - `webauthn` is phishing-resistant by construction: the browser binds every
   signature to the origin that created the credential, so a byte-perfect
   lookalike domain still cannot obtain a valid assertion. Challenges are
-  single-use (atomic delete-on-read via `OTPStore`) and TTL-bound.
+  single-use (atomic delete-on-read via `OTPStore`) and TTL-bound. Logins of
+  disabled users and from authenticators flagged as cloned (signature
+  counter did not advance) are rejected.
+- `magiclink.WithUserLookup` rejects codes of disabled or deleted accounts.
 - `multipass.RequireTwoFactor` lets any issuing strategy be gated behind a
   second factor without touching that strategy's own code. The second step
   is bound to a server-side pending login, so it cannot be reached without

@@ -229,3 +229,62 @@ func TestNewNumericOTP_RequiresVerifyLimiter(t *testing.T) {
 		t.Fatal("expected error without a verify RateLimiter")
 	}
 }
+
+type lookup struct {
+	byID, byEmail map[string]*multipass.User
+}
+
+func (l lookup) GetByID(_ context.Context, id string) (*multipass.User, error) {
+	if u, ok := l.byID[id]; ok {
+		return u, nil
+	}
+	return nil, multipass.ErrUserNotFound
+}
+
+func (l lookup) GetByEmail(_ context.Context, email string) (*multipass.User, error) {
+	if u, ok := l.byEmail[email]; ok {
+		return u, nil
+	}
+	return nil, multipass.ErrUserNotFound
+}
+
+func TestVerify_WithUserLookup(t *testing.T) {
+	active := &multipass.User{ID: "u1", Email: "a@x.io"}
+	disabled := &multipass.User{ID: "u2", Email: "b@x.io", Disabled: true}
+	users := lookup{
+		byID:    map[string]*multipass.User{"u1": active, "u2": disabled},
+		byEmail: map[string]*multipass.User{"a@x.io": active, "b@x.io": disabled},
+	}
+	tests := []struct {
+		name    string
+		to      string
+		userID  string
+		wantErr error
+	}{
+		{"active user", "a@x.io", "u1", nil},
+		{"disabled user by id", "b@x.io", "u2", multipass.ErrInvalidCredentials},
+		{"deleted user by id", "c@x.io", "u-gone", multipass.ErrInvalidCredentials},
+		{"disabled user by email", "b@x.io", "", multipass.ErrInvalidCredentials},
+		{"no account yet: sign-up", "new@x.io", "", nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s, err := magiclink.New(memory.NewOTPStore(), &captureSender{}, magiclink.WithUserLookup(users))
+			if err != nil {
+				t.Fatal(err)
+			}
+			ctx := context.Background()
+			code, err := s.Request(ctx, tc.to, multipass.Principal{UserID: tc.userID})
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = s.Verify(ctx, code)
+			if tc.wantErr == nil && err != nil {
+				t.Fatalf("Verify: %v", err)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("expected %v, got %v", tc.wantErr, err)
+			}
+		})
+	}
+}

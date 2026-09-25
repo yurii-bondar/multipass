@@ -383,3 +383,42 @@ func TestWebAuthn_CounterPersistFailureFailsLogin(t *testing.T) {
 		t.Fatalf("expected store error, got %v", err)
 	}
 }
+
+// Disabling an account must lock it out of every login method, passkeys
+// included.
+func TestWebAuthn_DisabledUserRejected(t *testing.T) {
+	u := &multipass.User{ID: "user-off", Email: "frank@example.com"}
+	s, _ := newStrategy(t, newUserStore(u))
+	rp := virtualwebauthn.RelyingParty{Name: rpDisplay, ID: rpID, Origin: rpOrigin}
+	auth := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	registerCredential(t, s, u, rp, &auth, cred)
+
+	u.Disabled = true
+	if _, err := s.Verify(context.Background(), loginEnvelope(t, s, u, rp, auth, cred)); !errors.Is(err, multipass.ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+// A signature counter that goes backwards means two copies of the private
+// key exist. go-webauthn only raises CloneWarning; the strategy must act on
+// it.
+func TestWebAuthn_CloneWarningRejected(t *testing.T) {
+	u := &multipass.User{ID: "user-clone", Email: "gina@example.com"}
+	s, _ := newStrategy(t, newUserStore(u))
+	rp := virtualwebauthn.RelyingParty{Name: rpDisplay, ID: rpID, Origin: rpOrigin}
+	auth := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	registerCredential(t, s, u, rp, &auth, cred)
+
+	original := cred
+	original.Counter = 10
+	if _, err := s.Verify(context.Background(), loginEnvelope(t, s, u, rp, auth, original)); err != nil {
+		t.Fatalf("login with the original key: %v", err)
+	}
+	clone := cred
+	clone.Counter = 3
+	if _, err := s.Verify(context.Background(), loginEnvelope(t, s, u, rp, auth, clone)); !errors.Is(err, multipass.ErrTokenInvalid) {
+		t.Fatalf("expected clone rejection, got %v", err)
+	}
+}

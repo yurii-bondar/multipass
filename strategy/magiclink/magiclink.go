@@ -59,6 +59,7 @@ type Strategy struct {
 	sender    Sender
 	limiter   RateLimiter
 	verifyLim RateLimiter // numeric OTP only: caps guesses per recipient
+	users     UserLookup
 	clock     multipass.Clock
 	ttl       time.Duration
 	codeBytes int
@@ -78,6 +79,19 @@ func WithRateLimiter(r RateLimiter) Option { return func(s *Strategy) { s.limite
 
 // WithClock overrides the clock (testing).
 func WithClock(c multipass.Clock) Option { return func(s *Strategy) { s.clock = c } }
+
+// UserLookup is the slice of multipass.UserRepository Verify needs to check
+// the account behind a code; any UserRepository satisfies it.
+type UserLookup interface {
+	GetByID(ctx context.Context, id string) (*multipass.User, error)
+	GetByEmail(ctx context.Context, email string) (*multipass.User, error)
+}
+
+// WithUserLookup makes Verify reject codes of disabled accounts, and of
+// accounts deleted after the code was issued for a known user id. A code
+// issued for an email with no account yet (passwordless sign-up) still
+// verifies. Without it Verify does not look at the user at all.
+func WithUserLookup(u UserLookup) Option { return func(s *Strategy) { s.users = u } }
 
 // WithURLPrefix turns codes into magic links. Example:
 //
@@ -217,12 +231,47 @@ func (s *Strategy) Verify(ctx context.Context, raw string) (*multipass.Principal
 	if payload.Purpose != s.purpose {
 		return nil, multipass.ErrTokenInvalid
 	}
+	if err := s.checkUser(ctx, payload); err != nil {
+		return nil, err
+	}
 	return &multipass.Principal{
 		UserID:       payload.UserID,
 		Email:        payload.Email,
 		Extra:        payload.Extra,
 		StrategyName: Name,
 	}, nil
+}
+
+// checkUser applies WithUserLookup to a consumed code.
+func (s *Strategy) checkUser(ctx context.Context, p *store.OTPPayload) error {
+	if s.users == nil {
+		return nil
+	}
+	var (
+		u   *multipass.User
+		err error
+	)
+	switch {
+	case p.UserID != "":
+		u, err = s.users.GetByID(ctx, p.UserID)
+		if errors.Is(err, multipass.ErrUserNotFound) {
+			return multipass.ErrInvalidCredentials
+		}
+	case p.Email != "":
+		u, err = s.users.GetByEmail(ctx, p.Email)
+		if errors.Is(err, multipass.ErrUserNotFound) {
+			return nil // no account yet: passwordless sign-up
+		}
+	default:
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("magiclink: load user: %w", err)
+	}
+	if u.Disabled {
+		return multipass.ErrInvalidCredentials
+	}
+	return nil
 }
 
 // verifyKey turns the raw Verify input into the OTPStore key, applying the
