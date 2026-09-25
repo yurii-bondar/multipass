@@ -32,12 +32,13 @@ const Name = "session"
 
 // Strategy implements opaque server-side sessions.
 type Strategy struct {
-	store               store.SessionStore
-	clock               multipass.Clock
-	idgen               multipass.IDGen
-	absoluteTTL         time.Duration
-	idleTTL             time.Duration // 0 disables rolling extension
-	revokeOldOnIssue    bool
+	store            store.SessionStore
+	clock            multipass.Clock
+	idgen            multipass.IDGen
+	absoluteTTL      time.Duration
+	idleTTL          time.Duration // 0 disables rolling extension
+	revokeOldOnIssue bool
+	onError          multipass.ErrorHandler
 }
 
 // Option configures the session strategy.
@@ -63,6 +64,10 @@ func WithIDGen(g multipass.IDGen) Option { return func(s *Strategy) { s.idgen = 
 // Default is false: most apps want concurrent sessions across devices.
 func WithRevokeOldOnIssue(b bool) Option { return func(s *Strategy) { s.revokeOldOnIssue = b } }
 
+// WithErrorHandler receives errors from deleting sessions that Verify has
+// already rejected as expired. Default multipass.DefaultErrorHandler.
+func WithErrorHandler(h multipass.ErrorHandler) Option { return func(s *Strategy) { s.onError = h } }
+
 // New constructs a session strategy on top of the given SessionStore.
 func New(st store.SessionStore, opts ...Option) (*Strategy, error) {
 	if st == nil {
@@ -73,6 +78,7 @@ func New(st store.SessionStore, opts ...Option) (*Strategy, error) {
 		clock:       multipass.SystemClock(),
 		idgen:       multipass.DefaultIDGen(),
 		absoluteTTL: 24 * time.Hour,
+		onError:     multipass.DefaultErrorHandler,
 	}
 	for _, opt := range opts {
 		opt(s)
@@ -129,12 +135,14 @@ func (s *Strategy) Verify(ctx context.Context, sid string) (*multipass.Principal
 		return nil, fmt.Errorf("session: get: %w", err)
 	}
 	now := s.clock.Now()
-	if !data.ExpiresAt.IsZero() && now.After(data.ExpiresAt) {
-		_ = s.store.Delete(ctx, sid)
-		return nil, multipass.ErrTokenExpired
-	}
-	if s.idleTTL > 0 && !data.LastSeen.IsZero() && now.Sub(data.LastSeen) > s.idleTTL {
-		_ = s.store.Delete(ctx, sid)
+	expired := !data.ExpiresAt.IsZero() && now.After(data.ExpiresAt)
+	idle := s.idleTTL > 0 && !data.LastSeen.IsZero() && now.Sub(data.LastSeen) > s.idleTTL
+	if expired || idle {
+		// The session is rejected either way; a failed delete only leaves a
+		// dead row behind for the store's own TTL to purge.
+		if err := s.store.Delete(ctx, sid); err != nil {
+			s.onError(ctx, fmt.Errorf("session: delete expired: %w", err))
+		}
 		return nil, multipass.ErrTokenExpired
 	}
 	if s.idleTTL > 0 {
@@ -145,7 +153,11 @@ func (s *Strategy) Verify(ctx context.Context, sid string) (*multipass.Principal
 		if remaining > 0 && remaining < ext {
 			ext = remaining
 		}
-		_ = s.store.Touch(ctx, sid, ext)
+		// A failed Touch would silently log the user out at the next idle
+		// deadline; surface it now instead.
+		if err := s.store.Touch(ctx, sid, ext); err != nil {
+			return nil, fmt.Errorf("session: touch: %w", err)
+		}
 	}
 	return &multipass.Principal{
 		UserID:       data.UserID,

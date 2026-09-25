@@ -102,7 +102,7 @@ func login(svc *multipass.Service, cookies *cookie.Manager) http.HandlerFunc {
 		}
 		creds, err := svc.Login(r.Context(), local.Name, session.Name, body.Email, body.Password)
 		if err != nil {
-			http.Error(w, "invalid credentials", 401)
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
 		ttl := time.Until(creds.AccessExpiry)

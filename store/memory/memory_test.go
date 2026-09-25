@@ -200,3 +200,54 @@ func TestOTPStore_SingleUse(t *testing.T) {
 		t.Fatalf("second consume should be ErrNotFound, got %v", err)
 	}
 }
+
+func TestTOTPGuard_AdvanceStep(t *testing.T) {
+	g := NewTOTPGuard()
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		step int64
+		want bool
+	}{
+		{"first use", 100, true},
+		{"same step is a replay", 100, false},
+		{"older step is a replay", 99, false},
+		{"newer step", 101, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := g.AdvanceStep(ctx, "u1", tc.step)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.want {
+				t.Fatalf("AdvanceStep(%d) = %v, want %v", tc.step, got, tc.want)
+			}
+		})
+	}
+	// Steps are tracked per user: another user's first code is never a replay.
+	if ok, _ := g.AdvanceStep(ctx, "u2", 100); !ok {
+		t.Fatal("step of another user must be accepted")
+	}
+}
+
+func TestTOTPGuard_AttemptWindow(t *testing.T) {
+	g := NewTOTPGuard()
+	ctx := context.Background()
+	for want := 1; want <= 3; want++ {
+		n, err := g.Attempt(ctx, "u1", time.Hour)
+		if err != nil || n != want {
+			t.Fatalf("Attempt #%d = %d, %v", want, n, err)
+		}
+	}
+	if err := g.ResetAttempts(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
+	if n, _ := g.Attempt(ctx, "u1", time.Hour); n != 1 {
+		t.Fatalf("after reset Attempt = %d, want 1", n)
+	}
+	// An elapsed window starts counting from scratch.
+	if n, _ := g.Attempt(ctx, "u1", 0); n != 1 {
+		t.Fatalf("after elapsed window Attempt = %d, want 1", n)
+	}
+}

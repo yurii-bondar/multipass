@@ -42,10 +42,11 @@ since every strategy already exposes the same `Issue`/`Verify`/`Revoke`
 triple:
 
 ```go
-totpStore := myTOTPSecretStore()
-totp, _ := magiclink.NewTOTP(totpStore)
+totpStore := myTOTPSecretStore() // TOTP secrets, keyed by user id
+totpGuard := myTOTPGuard()       // store.TOTPGuard: replay + attempt limit
+totp, _ := magiclink.NewTOTP(totpStore, totpGuard)
 
-svc.Register(multipass.RequireTwoFactor(jwtStrategy, totp,
+gate, err := multipass.RequireTwoFactor(jwtStrategy, totp, pendingStore, // store.OTPStore
     multipass.WithRequirement(multipass.TwoFactorRequirementFunc(
         func(ctx context.Context, userID string) (bool, error) {
             u, err := users.GetByID(ctx, userID)
@@ -55,17 +56,31 @@ svc.Register(multipass.RequireTwoFactor(jwtStrategy, totp,
             return u.MFASecret != "", nil // only users enrolled in 2FA are gated
         },
     )),
-))
+)
+svc.Register(gate)
 svc.Register(local.New(users, hasher)) // primary factor, left unwrapped
 ```
 
-`svc.Issue(ctx, "jwt", principal)` still works unchanged — the gate keeps the
-wrapped strategy's name. Without a second-factor code in
-`Principal.Extra["2fa_code"]` (key configurable via `WithExtraKey`), `Issue`
-returns `multipass.ErrTwoFactorRequired`; the caller prompts for the code
-and retries. `webauthn.Strategy` implements the same `Verify` method TOTP
-does, so a passkey can be used as the second factor too — either type can be
-passed as-is to `RequireTwoFactor`.
+The gate keeps the wrapped strategy's name, so `svc.Login(ctx, "local",
+"jwt", email, password)` still works. For an enrolled user it mints nothing:
+it stores the authenticated principal as a pending login and returns a
+`*multipass.TwoFactorPendingError` (matches `ErrTwoFactorRequired`) carrying
+a single-use, short-lived token. Hand the token to the client, then:
+
+```go
+var pending *multipass.TwoFactorPendingError
+if errors.As(err, &pending) {
+    // ... prompt for the code, then in the next request:
+    creds, err := svc.CompleteTwoFactor(ctx, "jwt", pending.Token, code)
+}
+```
+
+The second factor is always checked against the user stored in the pending
+login — never one supplied by the client — so the code step cannot be
+reached without passing the password step first. Wrong codes are allowed
+`WithMaxAttempts` times (default 3) before the pending login is discarded.
+`webauthn.Strategy` implements `multipass.SecondFactor` as well, so a passkey
+can be the second factor instead of TOTP.
 
 ## Installation
 
@@ -146,6 +161,11 @@ mp.RemoveKey(oldKey.KID)   // drop old key; tokens signed with it stop verifying
 - Refresh tokens are stateful: each refresh rotates the token and atomically
   marks the old one as used. Replaying an already-used refresh kills the
   whole token family — every device of that user is logged out.
+- Refresh tokens carry the identity claims (email, roles, `pwd_ver`), so
+  they survive any number of rotations. `WithUserLookup` makes every refresh
+  re-read the user: a disabled, deleted or password-changed account (bumped
+  `User.PasswordVer`) kills the token family, and role changes take effect
+  at the next refresh instead of the next login.
 - A `Blacklist` lets you revoke individual access tokens before they expire
   naturally; entries are pruned automatically.
 - Key rotation is supported via `KeyProvider` (multiple `KID`s verify, one
@@ -218,8 +238,15 @@ example requests.
 - Anti-enumeration on `local`: identical timing for `user not found` and
   `wrong password`; same `ErrInvalidCredentials` returned in both cases.
 - Account lockout after configurable failed-attempt threshold (see note
-  below on concurrent failures).
+  below on concurrent failures). A locked account returns the same
+  `ErrInvalidCredentials` as a wrong password, so lockout cannot be used to
+  enumerate accounts. Lockout is per account: also throttle attempts per
+  client (IP) in your app, otherwise anyone can lock a known email out.
 - Single-use OTPs (atomic delete-on-read) for magic links / SMS codes.
+  Numeric codes are bound to their recipient (verified as
+  `"<recipient>:<code>"`) and verification is rate-limited per recipient.
+- TOTP codes are accepted at most once (RFC 6238 §5.2) and verification
+  attempts are capped per user (default 5 per 15 min) via `store.TOTPGuard`.
 - Cookies built by `transport/cookie` use `HttpOnly`, `Secure`,
   `SameSite=Lax`, and the `__Host-` prefix by default.
 - Every operation is `context`-aware: cancellation, deadlines, and
@@ -230,9 +257,14 @@ example requests.
 - `webauthn` is phishing-resistant by construction: the browser binds every
   signature to the origin that created the credential, so a byte-perfect
   lookalike domain still cannot obtain a valid assertion. Challenges are
-  single-use (atomic delete-on-read via `OTPStore`) and TTL-bound.
+  single-use (atomic delete-on-read via `OTPStore`) and TTL-bound. Logins of
+  disabled users and from authenticators flagged as cloned (signature
+  counter did not advance) are rejected.
+- `magiclink.WithUserLookup` rejects codes of disabled or deleted accounts.
 - `multipass.RequireTwoFactor` lets any issuing strategy be gated behind a
-  second factor without touching that strategy's own code.
+  second factor without touching that strategy's own code. The second step
+  is bound to a server-side pending login, so it cannot be reached without
+  the primary factor.
 
 ### Account lockout under concurrent failures
 

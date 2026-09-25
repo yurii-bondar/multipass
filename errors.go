@@ -1,6 +1,10 @@
 package multipass
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"log/slog"
+)
 
 // Sentinel errors. Wrap them with fmt.Errorf("%w: ...", err) where extra
 // context is needed; consumers should compare with errors.Is.
@@ -33,9 +37,6 @@ var (
 	// presented for a second time. The whole token family is killed.
 	ErrReuseDetected = errors.New("multipass: refresh token reuse detected")
 
-	// ErrAccountLocked is returned after too many failed login attempts.
-	ErrAccountLocked = errors.New("multipass: account locked")
-
 	// ErrUserNotFound is an internal sentinel; UserRepository implementations
 	// must return this when a user does not exist. The strategy layer
 	// translates it to ErrInvalidCredentials.
@@ -49,9 +50,22 @@ var (
 	// operation (e.g. too many magic-link requests for the same email).
 	ErrRateLimited = errors.New("multipass: rate limited")
 
-	// ErrTwoFactorRequired is returned by TwoFactorGate.Issue when the caller
-	// is enrolled in 2FA but Principal.Extra does not carry a second-factor
-	// code/assertion yet. Applications should catch this and prompt the user
-	// for their second factor instead of treating it as a hard failure.
+	// ErrTwoFactorRequired is matched (via errors.Is) by the
+	// *TwoFactorPendingError that TwoFactorGate.Issue returns when the user
+	// must present a second factor. Use errors.As to get the pending token,
+	// prompt the user, then call Service.CompleteTwoFactor.
 	ErrTwoFactorRequired = errors.New("multipass: second factor required")
 )
+
+// ErrorHandler receives errors from side effects that must not fail the
+// operation that triggered them — e.g. resetting a failed-login counter
+// after a successful login, or deleting a session that is already expired.
+// Errors that affect security (recording a failed login, extending a
+// session, killing a token family) are always returned, never passed here.
+type ErrorHandler func(ctx context.Context, err error)
+
+// DefaultErrorHandler logs err through slog.Default at error level. It is
+// the handler strategies use unless configured otherwise.
+func DefaultErrorHandler(ctx context.Context, err error) {
+	slog.ErrorContext(ctx, "multipass: non-fatal operation failed", "err", err)
+}

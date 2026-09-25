@@ -159,6 +159,21 @@ func (s *Strategy) Verify(ctx context.Context, raw string) (*multipass.Principal
 	return s.FinishLogin(ctx, env.SessionID, req)
 }
 
+// VerifySecondFactor implements multipass.SecondFactor: input is the same
+// {session_id, credential} envelope Verify accepts. The assertion must
+// belong to userID — the account already authenticated by the primary
+// factor — so start the ceremony with BeginLogin(userID).
+func (s *Strategy) VerifySecondFactor(ctx context.Context, userID, input string) error {
+	p, err := s.Verify(ctx, input)
+	if err != nil {
+		return err
+	}
+	if p.UserID != userID {
+		return multipass.ErrInvalidCredentials
+	}
+	return nil
+}
+
 // Revoke removes a single passkey. raw is the credential ID, base64url
 // (RawURLEncoding) encoded — the same encoding used for Principal.TokenID
 // after a successful login. Idempotent: revoking an unknown id is not an
@@ -355,17 +370,29 @@ func (s *Strategy) FinishLogin(ctx context.Context, sessionID string, r *http.Re
 		return nil, multipass.ErrTokenInvalid
 	}
 
-	s.bumpCounter(ctx, resolvedID, cred)
-
 	u, err := s.users.GetByID(ctx, resolvedID)
 	if err != nil {
 		return nil, fmt.Errorf("webauthn: load user: %w", err)
+	}
+	if u.Disabled {
+		return nil, multipass.ErrInvalidCredentials
+	}
+	// The authenticator reported a signature counter that did not advance
+	// past the stored one: two copies of the private key are in use. The
+	// stored counter is left untouched so every later login from either
+	// copy keeps failing until the user re-registers the passkey.
+	if cred.Authenticator.CloneWarning {
+		return nil, fmt.Errorf("%w: authenticator may be cloned", multipass.ErrTokenInvalid)
+	}
+	if err := s.bumpCounter(ctx, resolvedID, cred); err != nil {
+		return nil, err
 	}
 
 	return &multipass.Principal{
 		UserID:       u.ID,
 		Email:        u.Email,
 		Roles:        u.Roles,
+		PasswordVer:  u.PasswordVer,
 		StrategyName: Name,
 		TokenID:      base64.RawURLEncoding.EncodeToString(cred.ID),
 		IssuedAt:     s.clock.Now(),
@@ -375,22 +402,33 @@ func (s *Strategy) FinishLogin(ctx context.Context, sessionID string, r *http.Re
 // bumpCounter persists the authenticator's post-verification state (signature
 // counter, clone-warning flag, ...) without disturbing the caller-supplied
 // Name/CreatedAt fields already on record.
-func (s *Strategy) bumpCounter(ctx context.Context, userID string, cred *gowebauthn.Credential) {
+//
+// The error is returned to the caller: the stored signature counter is what
+// lets the next login detect a cloned authenticator, so a login whose
+// counter could not be persisted must not succeed.
+func (s *Strategy) bumpCounter(ctx context.Context, userID string, cred *gowebauthn.Credential) error {
 	data, err := json.Marshal(cred)
 	if err != nil {
-		return
+		return fmt.Errorf("webauthn: encode credential: %w", err)
 	}
 	name, created := "", s.clock.Now()
-	if existing, err := s.creds.Get(ctx, cred.ID); err == nil && existing != nil {
+	existing, err := s.creds.Get(ctx, cred.ID)
+	switch {
+	case err == nil && existing != nil:
 		name, created = existing.Name, existing.CreatedAt
+	case err != nil && !errors.Is(err, store.ErrNotFound):
+		return fmt.Errorf("webauthn: load credential: %w", err)
 	}
-	_ = s.creds.Update(ctx, store.WebAuthnCredential{
+	if err := s.creds.Update(ctx, store.WebAuthnCredential{
 		ID:        cred.ID,
 		UserID:    userID,
 		Name:      name,
 		Data:      data,
 		CreatedAt: created,
-	})
+	}); err != nil {
+		return fmt.Errorf("webauthn: store sign counter: %w", err)
+	}
+	return nil
 }
 
 // saveSession stores WebAuthn SessionData under a fresh random id, reusing
@@ -475,5 +513,6 @@ func (u *webauthnUser) WebAuthnCredentials() []gowebauthn.Credential { return u.
 var (
 	_ multipass.Strategy      = (*Strategy)(nil)
 	_ multipass.RevokeAllable = (*Strategy)(nil)
+	_ multipass.SecondFactor  = (*Strategy)(nil)
 	_ gowebauthn.User         = (*webauthnUser)(nil)
 )

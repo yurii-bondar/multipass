@@ -10,16 +10,16 @@ import (
 // User is the canonical user record returned by UserRepository. The hash is
 // kept server-side; the password itself never leaves the local strategy.
 type User struct {
-	ID            string
-	Email         string
-	PasswordHash  string
-	Roles         []string
-	Disabled      bool
-	FailedLogins  int
-	LockedUntil   time.Time
-	PasswordVer   int    // bumped on password change; can be embedded in tokens to invalidate all old tokens
-	MFASecret     string // optional: TOTP secret for 2FA
-	Metadata      map[string]any
+	ID           string
+	Email        string
+	PasswordHash string
+	Roles        []string
+	Disabled     bool
+	FailedLogins int
+	LockedUntil  time.Time
+	PasswordVer  int    // bumped on password change; can be embedded in tokens to invalidate all old tokens
+	MFASecret    string // optional: TOTP secret for 2FA
+	Metadata     map[string]any
 }
 
 // UserRepository is the database-agnostic contract a host application must
@@ -33,6 +33,9 @@ type UserRepository interface {
 	GetByID(ctx context.Context, id string) (*User, error)
 	GetByEmail(ctx context.Context, email string) (*User, error)
 	Create(ctx context.Context, u *User) error
+	// UpdatePasswordHash stores a new hash with the given password version.
+	// The local strategy passes the unchanged version when it only re-hashes;
+	// the application bumps it on a real password change or reset.
 	UpdatePasswordHash(ctx context.Context, id, hash string, version int) error
 	IncrementFailedLogin(ctx context.Context, id string, lockUntil time.Time) (int, error)
 	ResetFailedLogin(ctx context.Context, id string) error

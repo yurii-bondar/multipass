@@ -311,3 +311,114 @@ func TestWebAuthn_Revoke_And_RevokeAllForUser(t *testing.T) {
 		t.Fatalf("ListCredentials after RevokeAllForUser = %+v, %v", list, err)
 	}
 }
+
+// loginEnvelope runs BeginLogin for u and returns the {session_id,
+// credential} envelope a browser would post back.
+func loginEnvelope(t *testing.T, s *webauthn.Strategy, u *multipass.User, rp virtualwebauthn.RelyingParty, auth virtualwebauthn.Authenticator, cred virtualwebauthn.Credential) string {
+	t.Helper()
+	assertion, sessionID, err := s.BeginLogin(context.Background(), u.ID)
+	if err != nil {
+		t.Fatalf("BeginLogin: %v", err)
+	}
+	optJSON, _ := json.Marshal(assertion)
+	assertOpts, err := virtualwebauthn.ParseAssertionOptions(string(optJSON))
+	if err != nil {
+		t.Fatalf("ParseAssertionOptions: %v", err)
+	}
+	envelope, err := json.Marshal(map[string]any{
+		"session_id": sessionID,
+		"credential": json.RawMessage(virtualwebauthn.CreateAssertionResponse(rp, auth, cred, *assertOpts)),
+	})
+	if err != nil {
+		t.Fatalf("marshal envelope: %v", err)
+	}
+	return string(envelope)
+}
+
+// As a second factor the assertion must belong to the account that already
+// passed the primary factor; a valid passkey of another user is not enough.
+func TestWebAuthn_VerifySecondFactor(t *testing.T) {
+	ctx := context.Background()
+	u := &multipass.User{ID: "user-2fa", Email: "dave@example.com"}
+	s, _ := newStrategy(t, newUserStore(u))
+	rp := virtualwebauthn.RelyingParty{Name: rpDisplay, ID: rpID, Origin: rpOrigin}
+	auth := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	registerCredential(t, s, u, rp, &auth, cred)
+
+	if err := s.VerifySecondFactor(ctx, u.ID, loginEnvelope(t, s, u, rp, auth, cred)); err != nil {
+		t.Fatalf("own passkey: %v", err)
+	}
+	if err := s.VerifySecondFactor(ctx, "someone-else", loginEnvelope(t, s, u, rp, auth, cred)); !errors.Is(err, multipass.ErrInvalidCredentials) {
+		t.Fatalf("passkey of another user: expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+type failingCredentialStore struct {
+	*memory.CredentialStore
+	updateErr error
+}
+
+func (f *failingCredentialStore) Update(context.Context, store.WebAuthnCredential) error {
+	return f.updateErr
+}
+
+// The stored sign counter is what lets the next login spot a cloned
+// authenticator; a login whose counter was not persisted must fail.
+func TestWebAuthn_CounterPersistFailureFailsLogin(t *testing.T) {
+	boom := errors.New("store down")
+	u := &multipass.User{ID: "user-ctr", Email: "erin@example.com"}
+	creds := &failingCredentialStore{CredentialStore: memory.NewCredentialStore(), updateErr: boom}
+	cfg := &gowebauthn.Config{RPID: rpID, RPDisplayName: rpDisplay, RPOrigins: []string{rpOrigin}}
+	s, err := webauthn.New(cfg, newUserStore(u), creds, memory.NewOTPStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := virtualwebauthn.RelyingParty{Name: rpDisplay, ID: rpID, Origin: rpOrigin}
+	auth := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	registerCredential(t, s, u, rp, &auth, cred)
+
+	if _, err := s.Verify(context.Background(), loginEnvelope(t, s, u, rp, auth, cred)); !errors.Is(err, boom) {
+		t.Fatalf("expected store error, got %v", err)
+	}
+}
+
+// Disabling an account must lock it out of every login method, passkeys
+// included.
+func TestWebAuthn_DisabledUserRejected(t *testing.T) {
+	u := &multipass.User{ID: "user-off", Email: "frank@example.com"}
+	s, _ := newStrategy(t, newUserStore(u))
+	rp := virtualwebauthn.RelyingParty{Name: rpDisplay, ID: rpID, Origin: rpOrigin}
+	auth := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	registerCredential(t, s, u, rp, &auth, cred)
+
+	u.Disabled = true
+	if _, err := s.Verify(context.Background(), loginEnvelope(t, s, u, rp, auth, cred)); !errors.Is(err, multipass.ErrInvalidCredentials) {
+		t.Fatalf("expected ErrInvalidCredentials, got %v", err)
+	}
+}
+
+// A signature counter that goes backwards means two copies of the private
+// key exist. go-webauthn only raises CloneWarning; the strategy must act on
+// it.
+func TestWebAuthn_CloneWarningRejected(t *testing.T) {
+	u := &multipass.User{ID: "user-clone", Email: "gina@example.com"}
+	s, _ := newStrategy(t, newUserStore(u))
+	rp := virtualwebauthn.RelyingParty{Name: rpDisplay, ID: rpID, Origin: rpOrigin}
+	auth := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	registerCredential(t, s, u, rp, &auth, cred)
+
+	original := cred
+	original.Counter = 10
+	if _, err := s.Verify(context.Background(), loginEnvelope(t, s, u, rp, auth, original)); err != nil {
+		t.Fatalf("login with the original key: %v", err)
+	}
+	clone := cred
+	clone.Counter = 3
+	if _, err := s.Verify(context.Background(), loginEnvelope(t, s, u, rp, auth, clone)); !errors.Is(err, multipass.ErrTokenInvalid) {
+		t.Fatalf("expected clone rejection, got %v", err)
+	}
+}

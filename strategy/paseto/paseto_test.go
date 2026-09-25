@@ -163,3 +163,29 @@ func TestPublicAndLocalNotInterchangeable(t *testing.T) {
 		t.Fatal("v4.local token must not parse as v4.public")
 	}
 }
+
+type failingRefreshStore struct {
+	*memory.RefreshStore
+	killErr error
+}
+
+func (f *failingRefreshStore) KillFamily(context.Context, string) error { return f.killErr }
+
+func TestRefresh_ReuseKillFailureIsReturned(t *testing.T) {
+	boom := errors.New("store down")
+	k := pst.NewV4SymmetricKey()
+	s, err := paseto.New(paseto.ModeLocal, paseto.Keys{Symmetric: &k},
+		paseto.WithRefreshStore(&failingRefreshStore{RefreshStore: memory.NewRefreshStore(), killErr: boom}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	creds, _ := s.Issue(ctx, multipass.Principal{UserID: "u1"})
+	if _, err := s.Refresh(ctx, creds.Refresh); err != nil {
+		t.Fatal(err)
+	}
+	_, err = s.Refresh(ctx, creds.Refresh)
+	if !errors.Is(err, multipass.ErrReuseDetected) || !errors.Is(err, boom) {
+		t.Fatalf("expected ErrReuseDetected joined with store error, got %v", err)
+	}
+}

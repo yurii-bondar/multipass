@@ -12,7 +12,7 @@
 //     Secure=true and __Host- prefix is incompatible with it)
 //   - Path: "/"
 //
-// Host prefix
+// # Host prefix
 //
 // When UseHostPrefix is enabled the cookie name is automatically prepended
 // with "__Host-", which forbids the cookie from being set with a Domain

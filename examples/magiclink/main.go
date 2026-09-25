@@ -138,7 +138,7 @@ func verifyHandler(svc *multipass.Service) http.HandlerFunc {
 		}
 		principal, err := svc.Verify(r.Context(), magiclink.Name, token)
 		if err != nil {
-			http.Error(w, "invalid or expired link", 401)
+			http.Error(w, "invalid or expired link", http.StatusUnauthorized)
 			return
 		}
 		creds, err := svc.Issue(r.Context(), jwt.Name, *principal)
