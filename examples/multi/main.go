@@ -128,7 +128,7 @@ func apiLogin(svc *multipass.Service) http.HandlerFunc {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		creds, err := svc.Login(r.Context(), local.Name, jwt.Name, body.Email, body.Password)
 		if err != nil {
-			http.Error(w, "invalid", 401)
+			http.Error(w, "invalid", http.StatusUnauthorized)
 			return
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -142,7 +142,7 @@ func webLogin(svc *multipass.Service, c *cookie.Manager) http.HandlerFunc {
 		_ = json.NewDecoder(r.Body).Decode(&body)
 		creds, err := svc.Login(r.Context(), local.Name, session.Name, body.Email, body.Password)
 		if err != nil {
-			http.Error(w, "invalid", 401)
+			http.Error(w, "invalid", http.StatusUnauthorized)
 			return
 		}
 		c.Set(w, creds.Access, time.Until(creds.AccessExpiry))

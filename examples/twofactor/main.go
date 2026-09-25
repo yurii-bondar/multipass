@@ -150,7 +150,7 @@ func enrollHandler(svc *multipass.Service, users *memUsers, totpStrat *magiclink
 		}
 		principal, err := svc.Authenticate(r.Context(), local.Name, body.Email, body.Password)
 		if err != nil {
-			http.Error(w, "invalid credentials", 401)
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
 		creds, err := totpStrat.Issue(r.Context(), *principal)
@@ -183,7 +183,7 @@ func loginHandler(svc *multipass.Service) http.HandlerFunc {
 		case errors.As(err, &pending):
 			writeJSON(w, map[string]any{"two_factor_required": true, "pending_token": pending.Token})
 		case err != nil:
-			http.Error(w, "invalid credentials", 401)
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		default:
 			writeJSON(w, creds)
 		}
@@ -205,7 +205,7 @@ func loginTwoFactorHandler(svc *multipass.Service) http.HandlerFunc {
 		}
 		creds, err := svc.CompleteTwoFactor(r.Context(), jwt.Name, body.PendingToken, body.Code)
 		if err != nil {
-			http.Error(w, "invalid code", 401)
+			http.Error(w, "invalid code", http.StatusUnauthorized)
 			return
 		}
 		writeJSON(w, creds)

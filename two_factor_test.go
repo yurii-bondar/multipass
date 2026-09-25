@@ -285,8 +285,8 @@ func TestTwoFactorGate_RevokeAllForUser_PassthroughWhenInnerSupports(t *testing.
 	if err := gate.RevokeAllForUser(context.Background(), "u1"); err != nil {
 		t.Fatalf("RevokeAllForUser: %v", err)
 	}
-	if inner.fakeStrategy.revokedAllFor != "u1" {
-		t.Errorf("RevokeAllForUser did not propagate: %q", inner.fakeStrategy.revokedAllFor)
+	if inner.revokedAllFor != "u1" {
+		t.Errorf("RevokeAllForUser did not propagate: %q", inner.revokedAllFor)
 	}
 }
 

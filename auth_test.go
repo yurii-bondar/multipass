@@ -18,9 +18,6 @@ type fakeStrategy struct {
 	verifyErr error
 	revoked   string
 
-	authenticator bool
-	refreshable   bool
-	revokeAllable bool
 	revokedAllFor string
 	refreshed     multipass.Credentials
 }
@@ -123,9 +120,9 @@ func TestService_RevokeAll_Routes(t *testing.T) {
 	if err := svc.RevokeAllForUser(context.Background(), "session", "u1"); err != nil {
 		t.Fatal(err)
 	}
-	if rev.fakeStrategy.revokedAllFor != "u1" {
+	if rev.revokedAllFor != "u1" {
 		t.Errorf("RevokeAllForUser did not propagate userID: got %q, want %q",
-			rev.fakeStrategy.revokedAllFor, "u1")
+			rev.revokedAllFor, "u1")
 	}
 }
 

@@ -207,7 +207,7 @@ func loginFinish(svc *multipass.Service, strat *passkey.Strategy) http.HandlerFu
 		}
 		principal, err := strat.FinishLogin(r.Context(), sessionID, r)
 		if err != nil {
-			http.Error(w, "login failed", 401)
+			http.Error(w, "login failed", http.StatusUnauthorized)
 			return
 		}
 		creds, err := svc.Issue(r.Context(), jwt.Name, *principal)

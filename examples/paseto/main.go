@@ -118,7 +118,7 @@ func loginHandler(svc *multipass.Service) http.HandlerFunc {
 		}
 		creds, err := svc.Login(r.Context(), local.Name, paseto.Name, body.Email, body.Password)
 		if err != nil {
-			http.Error(w, "invalid credentials", 401)
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
 		writeJSON(w, creds)
@@ -135,10 +135,10 @@ func refreshHandler(svc *multipass.Service, name string) http.HandlerFunc {
 		creds, err := svc.Refresh(r.Context(), name, body.Refresh)
 		if err != nil {
 			if errors.Is(err, multipass.ErrReuseDetected) {
-				http.Error(w, "session compromised — log in again", 401)
+				http.Error(w, "session compromised — log in again", http.StatusUnauthorized)
 				return
 			}
-			http.Error(w, err.Error(), 401)
+			http.Error(w, err.Error(), http.StatusUnauthorized)
 			return
 		}
 		writeJSON(w, creds)
