@@ -220,3 +220,65 @@ func TestAuthenticate_CarriesPasswordVersion(t *testing.T) {
 		t.Fatalf("PasswordVer = %d, want 7", p.PasswordVer)
 	}
 }
+
+// failingUsers wraps memUsers and fails selected writes.
+type failingUsers struct {
+	*memUsers
+	incrementErr, resetErr, updateErr error
+}
+
+func (f *failingUsers) IncrementFailedLogin(ctx context.Context, id string, lockUntil time.Time) (int, error) {
+	if f.incrementErr != nil {
+		return 0, f.incrementErr
+	}
+	return f.memUsers.IncrementFailedLogin(ctx, id, lockUntil)
+}
+
+func (f *failingUsers) ResetFailedLogin(ctx context.Context, id string) error {
+	if f.resetErr != nil {
+		return f.resetErr
+	}
+	return f.memUsers.ResetFailedLogin(ctx, id)
+}
+
+func (f *failingUsers) UpdatePasswordHash(ctx context.Context, id, hash string, version int) error {
+	if f.updateErr != nil {
+		return f.updateErr
+	}
+	return f.memUsers.UpdatePasswordHash(ctx, id, hash, version)
+}
+
+// If the failed-login counter cannot be written the lockout is not in
+// effect; reporting a plain wrong password would hide that brute-force
+// protection is down.
+func TestAuthenticate_CounterWriteFailureIsReturned(t *testing.T) {
+	boom := errors.New("db down")
+	repo := &failingUsers{memUsers: newMemUsers(), incrementErr: boom}
+	h := fastHasher()
+	seedUser(t, repo.memUsers, h, "alice@example.com", "Password123!")
+	s := local.New(repo, h)
+	_, err := s.Authenticate(context.Background(), "alice@example.com", "wrong")
+	if !errors.Is(err, boom) {
+		t.Fatalf("expected the store error, got %v", err)
+	}
+}
+
+// Housekeeping after a correct password must not fail the login, but must
+// not vanish either.
+func TestAuthenticate_HousekeepingErrorsReachHandler(t *testing.T) {
+	resetErr, updateErr := errors.New("reset failed"), errors.New("update failed")
+	repo := &failingUsers{memUsers: newMemUsers(), resetErr: resetErr, updateErr: updateErr}
+	weak := password.NewHasher(password.WithArgon2Params(password.Argon2Params{
+		Memory: 4 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32,
+	}))
+	seedUser(t, repo.memUsers, weak, "alice@example.com", "Password123!")
+
+	var got []error
+	s := local.New(repo, fastHasher(), local.WithErrorHandler(func(_ context.Context, err error) { got = append(got, err) }))
+	if _, err := s.Authenticate(context.Background(), "alice@example.com", "Password123!"); err != nil {
+		t.Fatalf("login must succeed: %v", err)
+	}
+	if len(got) != 2 || !errors.Is(got[0], resetErr) || !errors.Is(got[1], updateErr) {
+		t.Fatalf("handler got %v, want reset and update errors", got)
+	}
+}

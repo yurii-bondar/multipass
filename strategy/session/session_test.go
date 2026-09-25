@@ -135,3 +135,70 @@ func TestSIDsAreUnique(t *testing.T) {
 		seen[c.Access] = true
 	}
 }
+
+type failingSessionStore struct {
+	*memory.SessionStore
+	touchErr, deleteErr error
+}
+
+func (f *failingSessionStore) Touch(ctx context.Context, sid string, ttl time.Duration) error {
+	if f.touchErr != nil {
+		return f.touchErr
+	}
+	return f.SessionStore.Touch(ctx, sid, ttl)
+}
+
+func (f *failingSessionStore) Delete(ctx context.Context, sid string) error {
+	if f.deleteErr != nil {
+		return f.deleteErr
+	}
+	return f.SessionStore.Delete(ctx, sid)
+}
+
+// A swallowed Touch error looked like success, then logged the user out at
+// the next idle deadline with no trace of why.
+func TestVerify_TouchFailureIsReturned(t *testing.T) {
+	boom := errors.New("store down")
+	st := &failingSessionStore{SessionStore: memory.NewSessionStore(), touchErr: boom}
+	s, err := session.New(st, session.WithIdleTimeout(time.Minute))
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := s.Issue(context.Background(), multipass.Principal{UserID: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Verify(context.Background(), creds.Access); !errors.Is(err, boom) {
+		t.Fatalf("expected touch error, got %v", err)
+	}
+}
+
+type sessClock struct{ t time.Time }
+
+func (c *sessClock) Now() time.Time { return c.t }
+
+// The strategy's clock runs past the absolute TTL while the store's own TTL
+// (wall clock) has not elapsed, so Verify reaches its expiry branch and has
+// to delete the row itself.
+func TestVerify_ExpiredDeleteFailureReachesHandler(t *testing.T) {
+	boom := errors.New("delete failed")
+	st := &failingSessionStore{SessionStore: memory.NewSessionStore(), deleteErr: boom}
+	clock := &sessClock{t: time.Now()}
+	var got error
+	s, err := session.New(st, session.WithAbsoluteTTL(time.Hour), session.WithClock(clock),
+		session.WithErrorHandler(func(_ context.Context, err error) { got = err }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	creds, err := s.Issue(context.Background(), multipass.Principal{UserID: "u1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	clock.t = clock.t.Add(2 * time.Hour)
+	if _, err := s.Verify(context.Background(), creds.Access); !errors.Is(err, multipass.ErrTokenExpired) {
+		t.Fatalf("expected ErrTokenExpired, got %v", err)
+	}
+	if !errors.Is(got, boom) {
+		t.Fatalf("handler got %v, want delete error", got)
+	}
+}

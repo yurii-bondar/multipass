@@ -68,8 +68,7 @@ func (s *Strategy) Refresh(ctx context.Context, refresh string) (multipass.Crede
 	if reused {
 		// A successor of this token is already in circulation: someone is
 		// replaying. Burn the family.
-		_ = s.refreshStore.KillFamily(ctx, claims.FamilyID)
-		return multipass.Credentials{}, multipass.ErrReuseDetected
+		return multipass.Credentials{}, s.killFamily(ctx, claims.FamilyID, multipass.ErrReuseDetected)
 	}
 
 	email, roles := claims.Email, claims.Roles

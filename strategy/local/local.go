@@ -39,6 +39,7 @@ type Strategy struct {
 	maxFailedLogins int
 	lockoutFor      time.Duration
 	rehashOnLogin   bool
+	onError         multipass.ErrorHandler
 }
 
 // Option configures the local strategy.
@@ -58,6 +59,11 @@ func WithClock(c multipass.Clock) Option { return func(s *Strategy) { s.clock = 
 // hasher's parameters.
 func WithRehashOnLogin(enabled bool) Option { return func(s *Strategy) { s.rehashOnLogin = enabled } }
 
+// WithErrorHandler receives errors from non-fatal side effects of a
+// successful login (resetting the failed-login counter, re-hashing the
+// password). Default multipass.DefaultErrorHandler.
+func WithErrorHandler(h multipass.ErrorHandler) Option { return func(s *Strategy) { s.onError = h } }
+
 // New constructs a local strategy.
 func New(users multipass.UserRepository, hasher *password.Hasher, opts ...Option) *Strategy {
 	s := &Strategy{
@@ -67,6 +73,7 @@ func New(users multipass.UserRepository, hasher *password.Hasher, opts ...Option
 		maxFailedLogins: 10,
 		lockoutFor:      15 * time.Minute,
 		rehashOnLogin:   true,
+		onError:         multipass.DefaultErrorHandler,
 	}
 	for _, o := range opts {
 		o(s)
@@ -130,21 +137,21 @@ func (s *Strategy) Authenticate(ctx context.Context, identifier, secret string) 
 	needsRehash, vErr := s.hasher.Verify(user.PasswordHash, secret)
 	if vErr != nil {
 		if errors.Is(vErr, password.ErrPasswordMismatch) {
-			s.recordFailure(ctx, user)
+			if err := s.recordFailure(ctx, user); err != nil {
+				return nil, fmt.Errorf("local: record failed login: %w", err)
+			}
 			return nil, multipass.ErrInvalidCredentials
 		}
 		return nil, fmt.Errorf("local: hash verify: %w", vErr)
 	}
 
+	// The password is correct: failures below are housekeeping and must not
+	// turn a valid login into an error.
 	if err := s.users.ResetFailedLogin(ctx, user.ID); err != nil {
-		// Non-fatal: log but do not block login.
-		_ = err
+		s.onError(ctx, fmt.Errorf("local: reset failed logins: %w", err))
 	}
-
 	if s.rehashOnLogin && needsRehash {
-		if newHash, err := s.hasher.Hash(secret); err == nil {
-			_ = s.users.UpdatePasswordHash(ctx, user.ID, newHash, user.PasswordVer+1)
-		}
+		s.rehash(ctx, user, secret)
 	}
 
 	return &multipass.Principal{
@@ -157,10 +164,25 @@ func (s *Strategy) Authenticate(ctx context.Context, identifier, secret string) 
 	}, nil
 }
 
-func (s *Strategy) recordFailure(ctx context.Context, u *multipass.User) {
-	if s.maxFailedLogins <= 0 {
-		_, _ = s.users.IncrementFailedLogin(ctx, u.ID, time.Time{})
+func (s *Strategy) rehash(ctx context.Context, u *multipass.User, secret string) {
+	newHash, err := s.hasher.Hash(secret)
+	if err != nil {
+		s.onError(ctx, fmt.Errorf("local: rehash password: %w", err))
 		return
+	}
+	if err := s.users.UpdatePasswordHash(ctx, u.ID, newHash, u.PasswordVer+1); err != nil {
+		s.onError(ctx, fmt.Errorf("local: store rehashed password: %w", err))
+	}
+}
+
+// recordFailure increments the failed-login counter and applies the lockout.
+// Its error is returned to the caller: if the counter cannot be written, the
+// brute-force protection is not in effect and the attempt must not look like
+// an ordinary wrong password.
+func (s *Strategy) recordFailure(ctx context.Context, u *multipass.User) error {
+	if s.maxFailedLogins <= 0 {
+		_, err := s.users.IncrementFailedLogin(ctx, u.ID, time.Time{})
+		return err
 	}
 	// Speculatively compute lockUntil from the pre-read count. This is
 	// correct for the common single-request path. For the concurrent case
@@ -172,7 +194,7 @@ func (s *Strategy) recordFailure(ctx context.Context, u *multipass.User) {
 	}
 	newCount, err := s.users.IncrementFailedLogin(ctx, u.ID, lockUntil)
 	if err != nil {
-		return
+		return err
 	}
 	// Corrective path: if concurrent failures pushed the count over the
 	// threshold but the stale pre-read missed it (lockUntil was not passed),
@@ -184,8 +206,11 @@ func (s *Strategy) recordFailure(ctx context.Context, u *multipass.User) {
 	//                               THEN $lockUntil ELSE locked_until END
 	//    WHERE id = $id
 	if newCount >= s.maxFailedLogins && lockUntil.IsZero() {
-		_, _ = s.users.IncrementFailedLogin(ctx, u.ID, s.clock.Now().Add(s.lockoutFor))
+		if _, err := s.users.IncrementFailedLogin(ctx, u.ID, s.clock.Now().Add(s.lockoutFor)); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // Compile-time interface assertions.

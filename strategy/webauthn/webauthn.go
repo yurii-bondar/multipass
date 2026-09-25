@@ -370,7 +370,9 @@ func (s *Strategy) FinishLogin(ctx context.Context, sessionID string, r *http.Re
 		return nil, multipass.ErrTokenInvalid
 	}
 
-	s.bumpCounter(ctx, resolvedID, cred)
+	if err := s.bumpCounter(ctx, resolvedID, cred); err != nil {
+		return nil, err
+	}
 
 	u, err := s.users.GetByID(ctx, resolvedID)
 	if err != nil {
@@ -391,22 +393,33 @@ func (s *Strategy) FinishLogin(ctx context.Context, sessionID string, r *http.Re
 // bumpCounter persists the authenticator's post-verification state (signature
 // counter, clone-warning flag, ...) without disturbing the caller-supplied
 // Name/CreatedAt fields already on record.
-func (s *Strategy) bumpCounter(ctx context.Context, userID string, cred *gowebauthn.Credential) {
+//
+// The error is returned to the caller: the stored signature counter is what
+// lets the next login detect a cloned authenticator, so a login whose
+// counter could not be persisted must not succeed.
+func (s *Strategy) bumpCounter(ctx context.Context, userID string, cred *gowebauthn.Credential) error {
 	data, err := json.Marshal(cred)
 	if err != nil {
-		return
+		return fmt.Errorf("webauthn: encode credential: %w", err)
 	}
 	name, created := "", s.clock.Now()
-	if existing, err := s.creds.Get(ctx, cred.ID); err == nil && existing != nil {
+	existing, err := s.creds.Get(ctx, cred.ID)
+	switch {
+	case err == nil && existing != nil:
 		name, created = existing.Name, existing.CreatedAt
+	case err != nil && !errors.Is(err, store.ErrNotFound):
+		return fmt.Errorf("webauthn: load credential: %w", err)
 	}
-	_ = s.creds.Update(ctx, store.WebAuthnCredential{
+	if err := s.creds.Update(ctx, store.WebAuthnCredential{
 		ID:        cred.ID,
 		UserID:    userID,
 		Name:      name,
 		Data:      data,
 		CreatedAt: created,
-	})
+	}); err != nil {
+		return fmt.Errorf("webauthn: store sign counter: %w", err)
+	}
+	return nil
 }
 
 // saveSession stores WebAuthn SessionData under a fresh random id, reusing

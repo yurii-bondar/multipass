@@ -124,7 +124,7 @@ func (s *Strategy) Issue(ctx context.Context, p multipass.Principal) (multipass.
 		return multipass.Credentials{}, fmt.Errorf("paseto: gen access jti: %w", err)
 	}
 	accessExp := now.Add(s.accessTTL)
-	access, err := s.encode(s.tokenFor(p, accessJTI, "access", "", now, accessExp))
+	access, err := s.sign(p, accessJTI, "access", "", now, accessExp)
 	if err != nil {
 		return multipass.Credentials{}, err
 	}
@@ -143,7 +143,7 @@ func (s *Strategy) Issue(ctx context.Context, p multipass.Principal) (multipass.
 		}
 		familyID := uuid.NewString()
 		refreshExp := now.Add(s.refreshTTL)
-		refresh, err := s.encode(s.tokenFor(p, refreshJTI, "refresh", familyID, now, refreshExp))
+		refresh, err := s.sign(p, refreshJTI, "refresh", familyID, now, refreshExp)
 		if err != nil {
 			return multipass.Credentials{}, err
 		}
@@ -240,7 +240,9 @@ func (s *Strategy) Refresh(ctx context.Context, refresh string) (multipass.Crede
 		return multipass.Credentials{}, fmt.Errorf("paseto: rotate: %w", err)
 	}
 	if reused {
-		_ = s.refreshStore.KillFamily(ctx, familyID)
+		if err := s.refreshStore.KillFamily(ctx, familyID); err != nil {
+			return multipass.Credentials{}, errors.Join(multipass.ErrReuseDetected, fmt.Errorf("paseto: kill family: %w", err))
+		}
 		return multipass.Credentials{}, multipass.ErrReuseDetected
 	}
 
@@ -249,11 +251,11 @@ func (s *Strategy) Refresh(ctx context.Context, refresh string) (multipass.Crede
 
 	p := multipass.Principal{UserID: sub, Email: email, Roles: roles}
 
-	access, err := s.encode(s.tokenFor(p, newAccessJTI, "access", "", now, now.Add(s.accessTTL)))
+	access, err := s.sign(p, newAccessJTI, "access", "", now, now.Add(s.accessTTL))
 	if err != nil {
 		return multipass.Credentials{}, err
 	}
-	newRefresh, err := s.encode(s.tokenFor(p, newRefreshJTI, "refresh", rec.FamilyID, now, newRefreshExp))
+	newRefresh, err := s.sign(p, newRefreshJTI, "refresh", rec.FamilyID, now, newRefreshExp)
 	if err != nil {
 		return multipass.Credentials{}, err
 	}
@@ -277,7 +279,7 @@ func (s *Strategy) RevokeAllForUser(ctx context.Context, userID string) error {
 
 // ----- helpers -------------------------------------------------------------
 
-func (s *Strategy) tokenFor(p multipass.Principal, jti, typ, fid string, iat, exp time.Time) pst.Token {
+func (s *Strategy) tokenFor(p multipass.Principal, jti, typ, fid string, iat, exp time.Time) (pst.Token, error) {
 	t := pst.NewToken()
 	t.SetSubject(p.UserID)
 	t.SetJti(jti)
@@ -298,9 +300,20 @@ func (s *Strategy) tokenFor(p multipass.Principal, jti, typ, fid string, iat, ex
 		t.SetString("email", p.Email)
 	}
 	if len(p.Roles) > 0 {
-		_ = t.Set("roles", p.Roles)
+		if err := t.Set("roles", p.Roles); err != nil {
+			return pst.Token{}, fmt.Errorf("paseto: set roles: %w", err)
+		}
 	}
-	return t
+	return t, nil
+}
+
+// sign builds and encodes a token in one step.
+func (s *Strategy) sign(p multipass.Principal, jti, typ, fid string, iat, exp time.Time) (string, error) {
+	t, err := s.tokenFor(p, jti, typ, fid, iat, exp)
+	if err != nil {
+		return "", err
+	}
+	return s.encode(t)
 }
 
 func (s *Strategy) encode(t pst.Token) (string, error) {

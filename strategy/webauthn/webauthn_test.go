@@ -353,3 +353,33 @@ func TestWebAuthn_VerifySecondFactor(t *testing.T) {
 		t.Fatalf("passkey of another user: expected ErrInvalidCredentials, got %v", err)
 	}
 }
+
+type failingCredentialStore struct {
+	*memory.CredentialStore
+	updateErr error
+}
+
+func (f *failingCredentialStore) Update(context.Context, store.WebAuthnCredential) error {
+	return f.updateErr
+}
+
+// The stored sign counter is what lets the next login spot a cloned
+// authenticator; a login whose counter was not persisted must fail.
+func TestWebAuthn_CounterPersistFailureFailsLogin(t *testing.T) {
+	boom := errors.New("store down")
+	u := &multipass.User{ID: "user-ctr", Email: "erin@example.com"}
+	creds := &failingCredentialStore{CredentialStore: memory.NewCredentialStore(), updateErr: boom}
+	cfg := &gowebauthn.Config{RPID: rpID, RPDisplayName: rpDisplay, RPOrigins: []string{rpOrigin}}
+	s, err := webauthn.New(cfg, newUserStore(u), creds, memory.NewOTPStore())
+	if err != nil {
+		t.Fatal(err)
+	}
+	rp := virtualwebauthn.RelyingParty{Name: rpDisplay, ID: rpID, Origin: rpOrigin}
+	auth := virtualwebauthn.NewAuthenticator()
+	cred := virtualwebauthn.NewCredential(virtualwebauthn.KeyTypeEC2)
+	registerCredential(t, s, u, rp, &auth, cred)
+
+	if _, err := s.Verify(context.Background(), loginEnvelope(t, s, u, rp, auth, cred)); !errors.Is(err, boom) {
+		t.Fatalf("expected store error, got %v", err)
+	}
+}

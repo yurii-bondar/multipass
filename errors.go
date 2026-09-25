@@ -1,6 +1,10 @@
 package multipass
 
-import "errors"
+import (
+	"context"
+	"errors"
+	"log/slog"
+)
 
 // Sentinel errors. Wrap them with fmt.Errorf("%w: ...", err) where extra
 // context is needed; consumers should compare with errors.Is.
@@ -55,3 +59,16 @@ var (
 	// prompt the user, then call Service.CompleteTwoFactor.
 	ErrTwoFactorRequired = errors.New("multipass: second factor required")
 )
+
+// ErrorHandler receives errors from side effects that must not fail the
+// operation that triggered them — e.g. resetting a failed-login counter
+// after a successful login, or deleting a session that is already expired.
+// Errors that affect security (recording a failed login, extending a
+// session, killing a token family) are always returned, never passed here.
+type ErrorHandler func(ctx context.Context, err error)
+
+// DefaultErrorHandler logs err through slog.Default at error level. It is
+// the handler strategies use unless configured otherwise.
+func DefaultErrorHandler(ctx context.Context, err error) {
+	slog.ErrorContext(ctx, "multipass: non-fatal operation failed", "err", err)
+}
