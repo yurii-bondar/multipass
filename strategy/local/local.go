@@ -171,13 +171,16 @@ func (s *Strategy) Authenticate(ctx context.Context, identifier, secret string) 
 	}, nil
 }
 
+// rehash upgrades the stored hash to the current parameters. The password
+// itself is unchanged, so PasswordVer is kept: bumping it would revoke every
+// token the user holds just because the hash format moved on.
 func (s *Strategy) rehash(ctx context.Context, u *multipass.User, secret string) {
 	newHash, err := s.hasher.Hash(secret)
 	if err != nil {
 		s.onError(ctx, fmt.Errorf("local: rehash password: %w", err))
 		return
 	}
-	if err := s.users.UpdatePasswordHash(ctx, u.ID, newHash, u.PasswordVer+1); err != nil {
+	if err := s.users.UpdatePasswordHash(ctx, u.ID, newHash, u.PasswordVer); err != nil {
 		s.onError(ctx, fmt.Errorf("local: store rehashed password: %w", err))
 	}
 }

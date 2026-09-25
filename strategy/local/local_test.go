@@ -284,3 +284,28 @@ func TestAuthenticate_HousekeepingErrorsReachHandler(t *testing.T) {
 		t.Fatalf("handler got %v, want reset and update errors", got)
 	}
 }
+
+// Re-hashing is invisible to the user; bumping PasswordVer here would revoke
+// every token they hold (jwt.WithUserLookup compares it) on an ordinary
+// login.
+func TestAuthenticate_RehashKeepsPasswordVersion(t *testing.T) {
+	repo := newMemUsers()
+	weak := password.NewHasher(password.WithArgon2Params(password.Argon2Params{
+		Memory: 4 * 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 32,
+	}))
+	u := seedUser(t, repo, weak, "alice@example.com", "Password123!")
+	repo.byID[u.ID].PasswordVer = 4
+	oldHash := repo.byID[u.ID].PasswordHash
+
+	s := local.New(repo, fastHasher())
+	if _, err := s.Authenticate(context.Background(), "alice@example.com", "Password123!"); err != nil {
+		t.Fatal(err)
+	}
+	got := repo.byID[u.ID]
+	if got.PasswordHash == oldHash {
+		t.Fatal("expected the weaker hash to be upgraded")
+	}
+	if got.PasswordVer != 4 {
+		t.Fatalf("PasswordVer = %d after rehash, want 4", got.PasswordVer)
+	}
+}
