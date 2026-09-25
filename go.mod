@@ -1,6 +1,6 @@
 module github.com/yurii-bondar/multipass
 
-go 1.25.0
+go 1.26.0
 
 require (
 	aidanwoods.dev/go-paseto v1.6.0
@@ -9,7 +9,7 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/uuid v1.6.0
 	github.com/pquerna/otp v1.5.0
-	golang.org/x/crypto v0.52.0
+	golang.org/x/crypto v0.56.0
 )
 
 require (
@@ -22,5 +22,5 @@ require (
 	github.com/philhofer/fwd v1.2.0 // indirect
 	github.com/tinylib/msgp v1.6.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
-	golang.org/x/sys v0.45.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
 )
